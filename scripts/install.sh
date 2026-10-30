@@ -346,7 +346,7 @@ check_firewall_status
 
 apt-get update
 DEBIAN_FRONTEND=noninteractive apt-get install -y \
-    certbot composer git nginx php8.3-bcmath php8.3-cli php8.3-curl \
+    certbot composer git nginx python3-certbot-nginx php8.3-bcmath php8.3-cli php8.3-curl \
     php8.3-fpm php8.3-mbstring php8.3-sqlite3 php8.3-xml php8.3-zip rsync unzip
 
 if [[ "$PARTIAL_INSTALL" -eq 0 ]]; then

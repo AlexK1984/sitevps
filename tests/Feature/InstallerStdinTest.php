@@ -185,4 +185,33 @@ class InstallerStdinTest extends TestCase
             $this->assertSame($expectedOutput, $output);
         }
     }
+
+    public function test_certbot_nginx_plugin_is_installed_and_existing_partial_nginx_state_is_reused(): void
+    {
+        $installer = file_get_contents(base_path('scripts/install.sh'));
+
+        $this->assertIsString($installer);
+        $this->assertStringContainsString('certbot composer git nginx python3-certbot-nginx', $installer);
+
+        $partialResumeCheck = strpos($installer, 'if [[ "$PARTIAL_INSTALL" -eq 1 ]]; then');
+        $siteConfigValidation = strpos($installer, '! grep -Fqx "    server_name $RECORDED_DOMAIN;" "$NGINX_SITE"');
+        $enabledLinkValidation = strpos($installer, '[[ ! -L "$NGINX_ENABLED" ]] || [[ "$(readlink "$NGINX_ENABLED")" != "$NGINX_SITE" ]]');
+        $installingMarkerCreation = strpos($installer, 'printf \'%s %s\\n\' "$OWNER_MARKER" "$DOMAIN" >"$DATA_DIR/.installing"');
+        $nginxConfigValidation = strpos($installer, 'nginx -t');
+        $certbotInvocation = strpos($installer, 'certbot --nginx --non-interactive');
+
+        $this->assertNotFalse($partialResumeCheck);
+        $this->assertNotFalse($siteConfigValidation);
+        $this->assertNotFalse($enabledLinkValidation);
+        $this->assertNotFalse($installingMarkerCreation);
+        $this->assertNotFalse($nginxConfigValidation);
+        $this->assertNotFalse($certbotInvocation);
+        $this->assertLessThan($installingMarkerCreation, $partialResumeCheck);
+        $this->assertLessThan($nginxConfigValidation, $enabledLinkValidation);
+        $this->assertLessThan($certbotInvocation, $nginxConfigValidation);
+        $this->assertStringContainsString('if [[ "$PARTIAL_INSTALL" -eq 1 && "$DOMAIN" != "$RECORDED_DOMAIN" ]]', $installer);
+        $this->assertStringContainsString('This partial installation belongs to $RECORDED_DOMAIN', $installer);
+        $this->assertStringContainsString('[[ "$conflicting_config" == "$NGINX_ENABLED" ]] && continue', $installer);
+        $this->assertStringContainsString('if [[ ! -L "$NGINX_ENABLED" ]]; then', $installer);
+    }
 }
