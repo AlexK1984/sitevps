@@ -33,6 +33,7 @@ Route::prefix('admin')
     ->group(function (): void {
         Route::get('/', [AdminController::class, 'index'])->name('index');
         Route::put('/payment-settings', [AdminController::class, 'updatePaymentSettings'])->name('payment-settings.update');
+        Route::put('/payment-credentials', [AdminController::class, 'updatePaymentCredentials'])->name('payment-credentials.update');
         Route::post('/tariffs', [AdminController::class, 'storeTariff'])->name('tariffs.store');
         Route::put('/tariffs/{tariff}', [AdminController::class, 'updateTariff'])->name('tariffs.update');
         Route::post('/panels', [AdminController::class, 'storePanel'])->name('panels.store');

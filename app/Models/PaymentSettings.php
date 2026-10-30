@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Attributes\Fillable;
+use Illuminate\Database\Eloquent\Attributes\Hidden;
 use Illuminate\Database\Eloquent\Model;
 
 #[Fillable([
@@ -13,7 +14,11 @@ use Illuminate\Database\Eloquent\Model;
     'crypto_confirmations',
     'crypto_payment_ttl_minutes',
     'crypto_admin_notes',
+    'yookassa_shop_id',
+    'yookassa_secret_key',
+    'telegram_bot_token',
 ])]
+#[Hidden(['yookassa_shop_id', 'yookassa_secret_key', 'telegram_bot_token'])]
 class PaymentSettings extends Model
 {
     protected function casts(): array
@@ -21,6 +26,9 @@ class PaymentSettings extends Model
         return [
             'yookassa_enabled' => 'boolean',
             'telegram_stars_enabled' => 'boolean',
+            'yookassa_shop_id' => 'encrypted',
+            'yookassa_secret_key' => 'encrypted',
+            'telegram_bot_token' => 'encrypted',
         ];
     }
 
@@ -30,5 +38,35 @@ class PaymentSettings extends Model
             'yookassa_enabled' => true,
             'telegram_stars_enabled' => false,
         ]);
+    }
+
+    public function yookassaCredentials(): array
+    {
+        $shopId = $this->yookassa_shop_id;
+        $secretKey = $this->yookassa_secret_key;
+
+        if (filled($shopId) || filled($secretKey)) {
+            return ['shop_id' => $shopId, 'secret_key' => $secretKey];
+        }
+
+        return [
+            'shop_id' => config('services.yookassa.shop_id'),
+            'secret_key' => config('services.yookassa.secret_key'),
+        ];
+    }
+
+    public function telegramBotToken(): ?string
+    {
+        return $this->telegram_bot_token ?: config('services.telegram.bot_token');
+    }
+
+    public function yookassaConfiguredInAdmin(): bool
+    {
+        return filled($this->yookassa_shop_id) && filled($this->yookassa_secret_key);
+    }
+
+    public function telegramConfiguredInAdmin(): bool
+    {
+        return filled($this->telegram_bot_token);
     }
 }

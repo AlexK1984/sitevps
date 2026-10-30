@@ -10,18 +10,34 @@ use App\Models\Tariff;
 use App\Models\User;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Validator;
 use Illuminate\View\View;
 
 class AdminController extends Controller
 {
     public function index(): View
     {
+        $settings = PaymentSettings::current();
+        $yookassaCredentials = $settings->yookassaCredentials();
+
         return view('admin.index', [
             'users' => User::query()->with('assignedPanel')->orderBy('id')->paginate(30, ['*'], 'users'),
             'tariffs' => Tariff::query()->orderBy('id')->get(),
             'panels' => Panel::query()->orderBy('name')->get(),
             'orders' => Order::query()->with(['user', 'tariff', 'panel'])->latest()->limit(100)->get(),
-            'paymentSettings' => PaymentSettings::current(),
+            'paymentSettings' => (object) [
+                'yookassa_enabled' => $settings->yookassa_enabled,
+                'telegram_stars_enabled' => $settings->telegram_stars_enabled,
+                'crypto_asset' => $settings->crypto_asset,
+                'crypto_network' => $settings->crypto_network,
+                'crypto_confirmations' => $settings->crypto_confirmations,
+                'crypto_payment_ttl_minutes' => $settings->crypto_payment_ttl_minutes,
+                'crypto_admin_notes' => $settings->crypto_admin_notes,
+                'yookassa_configured' => filled($yookassaCredentials['shop_id']) && filled($yookassaCredentials['secret_key']),
+                'yookassa_configured_in_admin' => $settings->yookassaConfiguredInAdmin(),
+                'telegram_configured' => filled($settings->telegramBotToken()),
+                'telegram_configured_in_admin' => $settings->telegramConfiguredInAdmin(),
+            ],
         ]);
     }
 
@@ -80,6 +96,69 @@ class AdminController extends Controller
         PaymentSettings::current()->update($validated);
 
         return back()->with('status', 'Настройки способов оплаты сохранены.');
+    }
+
+    public function updatePaymentCredentials(Request $request): RedirectResponse
+    {
+        $secretFields = ['yookassa_shop_id', 'yookassa_secret_key', 'telegram_bot_token'];
+        $validator = Validator::make($request->all(), [
+            'yookassa_shop_id' => ['nullable', 'string', 'max:255'],
+            'yookassa_secret_key' => ['nullable', 'string', 'max:500'],
+            'telegram_bot_token' => ['nullable', 'string', 'max:500'],
+            'clear_yookassa' => ['sometimes', 'boolean'],
+            'clear_telegram' => ['sometimes', 'boolean'],
+        ]);
+
+        if ($validator->fails()) {
+            return back()
+                ->withErrors($validator)
+                ->withInput($request->except($secretFields));
+        }
+
+        $validated = $validator->validated();
+        $settings = PaymentSettings::current();
+        $updates = [];
+
+        if ($request->boolean('clear_yookassa')) {
+            $updates['yookassa_shop_id'] = null;
+            $updates['yookassa_secret_key'] = null;
+        } else {
+            $newShopId = trim((string) ($validated['yookassa_shop_id'] ?? ''));
+            $newSecretKey = trim((string) ($validated['yookassa_secret_key'] ?? ''));
+            $hasStoredPair = filled($settings->yookassa_shop_id) && filled($settings->yookassa_secret_key);
+
+            if (($newShopId !== '' || $newSecretKey !== '')
+                && ! $hasStoredPair
+                && ($newShopId === '' || $newSecretKey === '')) {
+                return back()
+                    ->withErrors(['yookassa_shop_id' => 'Для первого сохранения введите Shop ID и секретный ключ вместе.'])
+                    ->withInput($request->except($secretFields));
+            }
+
+            if ($newShopId !== '') {
+                $updates['yookassa_shop_id'] = $newShopId;
+            }
+
+            if ($newSecretKey !== '') {
+                $updates['yookassa_secret_key'] = $newSecretKey;
+            }
+        }
+
+        if ($request->boolean('clear_telegram')) {
+            $updates['telegram_bot_token'] = null;
+        } else {
+            $newTelegramToken = trim((string) ($validated['telegram_bot_token'] ?? ''));
+
+            if ($newTelegramToken !== '') {
+                $updates['telegram_bot_token'] = $newTelegramToken;
+            }
+        }
+
+        if ($updates !== []) {
+            $settings->update($updates);
+        }
+
+        return back()->with('status', 'Учётные данные сохранены. Секреты не отображаются повторно.');
     }
 
     public function storePanel(Request $request): RedirectResponse

@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Exceptions\PaymentGatewayException;
 use App\Models\Order;
+use App\Models\PaymentSettings;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Http;
 
@@ -11,7 +12,9 @@ class YooKassaClient
 {
     public function configured(): bool
     {
-        return filled(config('services.yookassa.shop_id')) && filled(config('services.yookassa.secret_key'));
+        $credentials = PaymentSettings::current()->yookassaCredentials();
+
+        return filled($credentials['shop_id']) && filled($credentials['secret_key']);
     }
 
     public function createPayment(Order $order, string $returnUrl): array
@@ -19,6 +22,8 @@ class YooKassaClient
         if (! $this->configured()) {
             throw new PaymentGatewayException('ЮKassa не настроена.');
         }
+
+        $credentials = PaymentSettings::current()->yookassaCredentials();
 
         try {
             $payload = [
@@ -67,7 +72,7 @@ class YooKassaClient
                 $payload['receipt'] = $receipt;
             }
 
-            $response = Http::withBasicAuth(config('services.yookassa.shop_id'), config('services.yookassa.secret_key'))
+            $response = Http::withBasicAuth($credentials['shop_id'], $credentials['secret_key'])
                 ->acceptJson()
                 ->asJson()
                 ->withHeaders(['Idempotence-Key' => $order->reference])
@@ -98,8 +103,10 @@ class YooKassaClient
             throw new PaymentGatewayException('ЮKassa не настроена.');
         }
 
+        $credentials = PaymentSettings::current()->yookassaCredentials();
+
         try {
-            $response = Http::withBasicAuth(config('services.yookassa.shop_id'), config('services.yookassa.secret_key'))
+            $response = Http::withBasicAuth($credentials['shop_id'], $credentials['secret_key'])
                 ->acceptJson()
                 ->timeout(15)
                 ->get('https://api.yookassa.ru/v3/payments/'.rawurlencode($paymentId));

@@ -12,7 +12,9 @@ use App\Models\Tariff;
 use App\Models\TelegramLinkToken;
 use App\Models\User;
 use App\Services\CheckoutService;
+use App\Services\TelegramBotClient;
 use App\Services\ThreeXUiClient;
+use App\Services\YooKassaClient;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request as ClientRequest;
 use Illuminate\Support\Carbon;
@@ -46,6 +48,11 @@ class SubscriptionFlowTest extends TestCase
     public function test_non_admin_cannot_open_admin_panel(): void
     {
         $this->actingAs(User::factory()->create())->get('/admin')->assertForbidden();
+        $this->actingAs(User::factory()->create())->put('/admin/payment-credentials', [
+            'yookassa_shop_id' => 'not-authorized',
+            'yookassa_secret_key' => 'not-authorized',
+            'telegram_bot_token' => 'not-authorized',
+        ])->assertForbidden();
     }
 
     public function test_admin_can_create_a_tariff_with_ruble_pricing(): void
@@ -100,6 +107,128 @@ class SubscriptionFlowTest extends TestCase
             'crypto_payment_ttl_minutes' => 30,
             'crypto_admin_notes' => 'Choose provider before launch.',
         ]);
+    }
+
+    public function test_admin_credentials_are_encrypted_and_never_returned_to_the_browser(): void
+    {
+        config([
+            'services.yookassa.shop_id' => null,
+            'services.yookassa.secret_key' => null,
+            'services.telegram.bot_token' => null,
+        ]);
+        $admin = User::factory()->create(['is_admin' => true]);
+
+        $this->actingAs($admin)->put('/admin/payment-credentials', [
+            'yookassa_shop_id' => 'private-shop-id',
+            'yookassa_secret_key' => 'private-yookassa-key',
+            'telegram_bot_token' => 'private-telegram-token',
+        ])->assertRedirect();
+
+        $settings = PaymentSettings::current();
+        $raw = DB::table('payment_settings')->where('id', 1)->first();
+        $this->assertSame('private-shop-id', $settings->yookassa_shop_id);
+        $this->assertSame('private-yookassa-key', $settings->yookassa_secret_key);
+        $this->assertSame('private-telegram-token', $settings->telegram_bot_token);
+        $this->assertNotSame('private-shop-id', $raw->yookassa_shop_id);
+        $this->assertNotSame('private-yookassa-key', $raw->yookassa_secret_key);
+        $this->assertNotSame('private-telegram-token', $raw->telegram_bot_token);
+        $this->assertArrayNotHasKey('yookassa_shop_id', $settings->toArray());
+        $this->assertArrayNotHasKey('yookassa_secret_key', $settings->toArray());
+        $this->assertArrayNotHasKey('telegram_bot_token', $settings->toArray());
+
+        $this->get('/admin')
+            ->assertOk()
+            ->assertDontSee('private-shop-id')
+            ->assertDontSee('private-yookassa-key')
+            ->assertDontSee('private-telegram-token')
+            ->assertSee('настроена в админ-панели')
+            ->assertSee('токен задан в админ-панели');
+    }
+
+    public function test_clearing_admin_credentials_falls_back_to_existing_environment_configuration(): void
+    {
+        config([
+            'services.yookassa.shop_id' => 'legacy-shop-id',
+            'services.yookassa.secret_key' => 'legacy-yookassa-key',
+            'services.telegram.bot_token' => 'legacy-telegram-token',
+        ]);
+        PaymentSettings::current()->update([
+            'yookassa_shop_id' => 'admin-shop-id',
+            'yookassa_secret_key' => 'admin-yookassa-key',
+            'telegram_bot_token' => 'admin-telegram-token',
+        ]);
+        $admin = User::factory()->create(['is_admin' => true]);
+
+        $this->actingAs($admin)->put('/admin/payment-credentials', [
+            'clear_yookassa' => '1',
+            'clear_telegram' => '1',
+        ])->assertRedirect();
+
+        $settings = PaymentSettings::current()->fresh();
+        $this->assertNull($settings->yookassa_shop_id);
+        $this->assertNull($settings->yookassa_secret_key);
+        $this->assertNull($settings->telegram_bot_token);
+        $this->assertSame([
+            'shop_id' => 'legacy-shop-id',
+            'secret_key' => 'legacy-yookassa-key',
+        ], $settings->yookassaCredentials());
+        $this->assertSame('legacy-telegram-token', $settings->telegramBotToken());
+    }
+
+    public function test_invalid_credential_submission_does_not_flash_secret_fields_to_session(): void
+    {
+        $admin = User::factory()->create(['is_admin' => true]);
+
+        $this->actingAs($admin)->put('/admin/payment-credentials', [
+            'yookassa_shop_id' => 'private-shop-id',
+            'yookassa_secret_key' => 'private-yookassa-key',
+            'telegram_bot_token' => str_repeat('x', 501),
+        ])->assertSessionHasErrors('telegram_bot_token');
+
+        $this->assertFalse(session()->hasOldInput('yookassa_shop_id'));
+        $this->assertFalse(session()->hasOldInput('yookassa_secret_key'));
+        $this->assertFalse(session()->hasOldInput('telegram_bot_token'));
+        $this->assertDatabaseCount('payment_settings', 0);
+    }
+
+    public function test_yookassa_uses_admin_credentials_as_a_pair_and_not_environment_credentials(): void
+    {
+        config([
+            'services.yookassa.shop_id' => 'legacy-shop-id',
+            'services.yookassa.secret_key' => 'legacy-secret',
+        ]);
+        PaymentSettings::current()->update([
+            'yookassa_shop_id' => 'admin-shop-id',
+            'yookassa_secret_key' => 'admin-secret',
+        ]);
+        $tariff = $this->createTariff();
+        $order = $this->createOrder($tariff, User::factory()->create());
+
+        Http::fake([
+            'https://api.yookassa.ru/v3/payments' => Http::response([
+                'id' => 'admin-credentials-payment',
+                'confirmation' => ['confirmation_url' => 'https://pay.example.com/confirm'],
+            ]),
+        ]);
+
+        app(YooKassaClient::class)->createPayment($order->load(['tariff', 'user']), 'https://site.example.com/dashboard');
+
+        Http::assertSent(fn (ClientRequest $request) => $request->hasHeader(
+            'Authorization',
+            'Basic '.base64_encode('admin-shop-id:admin-secret'),
+        ));
+    }
+
+    public function test_telegram_bot_uses_admin_token_instead_of_environment_token(): void
+    {
+        config(['services.telegram.bot_token' => 'legacy-telegram-token']);
+        PaymentSettings::current()->update(['telegram_bot_token' => 'admin-telegram-token']);
+        Http::fake(['https://api.telegram.org/*' => Http::response(['ok' => true])]);
+
+        app(TelegramBotClient::class)->sendMessage('123', 'Test message');
+
+        Http::assertSent(fn (ClientRequest $request) => str_contains($request->url(), '/botadmin-telegram-token/sendMessage')
+            && ! str_contains($request->url(), 'legacy-telegram-token'));
     }
 
     public function test_admin_can_set_a_tariff_price_in_telegram_stars(): void

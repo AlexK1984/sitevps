@@ -1,15 +1,27 @@
-# VPN subscriptions
+# Продажа VPN-подписок
 
-A lightweight Laravel application for selling VPN subscriptions through a website and Telegram. The website runs separately from the 3x-ui servers and contacts them through their HTTPS API.
+Лёгкое Laravel-приложение для продажи VPN-подписок через сайт и Telegram. Веб-сайт устанавливается отдельно от серверов 3x-ui и обращается к ним через HTTPS API.
 
-## Requirements
+## Возможности
 
-- PHP 8.3 or later with `bcmath`, `curl`, `fileinfo`, `mbstring`, `openssl`, `pdo_sqlite`, `sqlite3`, and `xml`
-- Composer 2
-- SQLite
-- Ubuntu 24.04 LTS for the included installer
+- Регистрация пользователей, личный кабинет и ручное назначение панели администратором.
+- Настраиваемые тарифы, срок, объём трафика и ориентировочный лимит одновременных IP.
+- Приём платежей через ЮKassa и Telegram Stars.
+- Автоматическая выдача и продление доступа на удалённых панелях 3x-ui после подтверждения платежа.
+- Telegram-бот для покупки и продления подписки.
+- Подготовительные настройки криптооплаты. Криптовалютные платежи выключены до выбора и интеграции провайдера.
+- Админ-панель для пользователей, тарифов, платежей, серверов и платёжных настроек.
 
-## Local development
+Ограничение одновременных подключений зависит от возможностей панели и сети и не является гарантией жёсткого лимита устройств.
+
+## Требования для локальной разработки
+
+- PHP 8.3 или новее с расширениями `bcmath`, `curl`, `fileinfo`, `mbstring`, `openssl`, `pdo_sqlite`, `sqlite3` и `xml`.
+- Composer 2.
+- SQLite.
+- Для установщика сервера — чистый Ubuntu 24.04 LTS.
+
+## Локальный запуск
 
 ```sh
 composer install
@@ -21,63 +33,77 @@ php artisan app:make-admin admin@example.com
 php artisan serve
 ```
 
-In another terminal, run the database queue worker:
+Команда создания администратора спросит его имя и пароль дважды; пароль должен содержать не менее 10 символов. Для обработки очереди в отдельном терминале запустите:
 
 ```sh
 php artisan queue:work database --tries=1
 ```
 
-The admin command asks for the administrator name and a password twice. Add tariffs and remote 3x-ui panels from `/admin`. Prices, terms, traffic allowances, and approximate concurrent-IP values are configured there; no production prices or credentials are bundled.
+После входа в `/admin` создайте тарифы и добавьте удалённые панели 3x-ui. Все цены, сроки, лимиты трафика и ориентировочное число подключений задаются администратором.
 
-## Payments
+## Установка на чистый VPS одной командой
 
-Set `YOOKASSA_SHOP_ID` and `YOOKASSA_SECRET_KEY` in the server's `.env`, then configure the YooKassa notification URL as:
-
-```text
-https://your-domain.example/webhooks/yookassa
-```
-
-The notification is not trusted by itself. The application fetches the payment from YooKassa and checks the payment ID, order reference, RUB currency, exact amount, and succeeded status before queuing access provisioning. Repeated notifications do not create extra subscription time or traffic.
-
-If the merchant's YooKassa setup requires fiscal receipts, set `YOOKASSA_RECEIPT_VAT_CODE` (and, when applicable, `YOOKASSA_TAX_SYSTEM_CODE`) to the values configured for the merchant account. With a VAT code set, checkout includes the buyer's account email and a VPN service line item in the receipt. Confirm the tax settings with the merchant's accounting requirements before accepting production payments.
-
-Payment methods are managed in `/admin`. YooKassa can be switched on or off there; its credentials remain in the server `.env`. Telegram Stars are available only in the linked Telegram bot: enable Stars in `/admin` and set a whole-number Stars price on each tariff. The bot uses Telegram invoices in `XTR`; it accepts a pre-checkout query only when the pending order, linked Telegram account, currency, and amount match. Access is provisioned only after Telegram sends a valid `successful_payment` update through the secret-protected webhook. The payment event is recorded idempotently like YooKassa notifications.
-
-The admin panel also has provider-independent crypto preparation fields (asset, network, confirmation count, payment window, and internal note). They do not enable checkout, generate an address, verify a transfer, or mark an order paid. Crypto payments remain unavailable until a provider is selected and its server-side create/verify integration is implemented. Do not enter API keys or secrets in these fields.
-
-## 3x-ui panels
-
-Add each panel in `/admin` using its HTTPS API base URL, subscription URL prefix, account credentials, inbound ID, protocol, and optional flow. The subscription URL prefix is the public 3x-ui subscription endpoint before the per-client ID (for example, `https://vpn.example.com:2096/sub`); configure it according to the panel's subscription settings. Panel passwords are encrypted at rest using Laravel's application key. The site calls the 3x-ui login, inbound-list, add-client, and update-client API endpoints from the server; credentials are never sent to the browser.
-
-An administrator assigns a panel to each user. A paid order received before assignment stays in `paid_unassigned`; assigning a panel queues provisioning. Failed API calls remain visible to the administrator and can be retried. The connection value maps to 3x-ui's IP limit where supported and does not guarantee a hard device count. Traffic allowance is cumulative across paid renewals.
-
-The API and inbound behavior can vary between 3x-ui releases and panel configurations. Verify the panel version and inbound settings before enabling real customer payments.
-
-## Telegram bot
-
-Set `TELEGRAM_BOT_TOKEN`, `TELEGRAM_BOT_NAME`, and a random `TELEGRAM_WEBHOOK_SECRET` in `.env`. Register the webhook URL as:
-
-```text
-https://your-domain.example/webhooks/telegram
-```
-
-Configure Telegram to send the same secret in its `X-Telegram-Bot-Api-Secret-Token` header. Users generate a single-use, ten-minute account-link URL in their dashboard. The bot supports `/plans` and `/renew`; customers can pay with YooKassa or, when enabled and priced by the administrator, Telegram Stars. Both methods provision through the same subscription queue.
-
-## One-command server installation
-
-On an Ubuntu 24.04 LTS server with the repository checkout available, run:
+Для установки нужен сервер **Ubuntu 24.04 LTS** с публичным доменом. До запуска направьте DNS-записи домена на IP сервера и разрешите входящие подключения к TCP-портам **80 и 443**. Установщик работает от `root`, установит системные зависимости, склонирует репозиторий, настроит приложение, SQLite, PHP-FPM, очередь, Nginx и сертификат HTTPS, затем попросит создать администратора.
 
 ```sh
-sudo bash scripts/install.sh
+curl -fsSL https://raw.githubusercontent.com/AlexK1984/sitevps/alexk1984-vpn-subscriptions-site/scripts/bootstrap.sh | sudo bash
 ```
 
-The installer asks for the website domain and certificate email, installs PHP-FPM, Nginx, Composer, SQLite, and Certbot, configures Let's Encrypt HTTPS, creates the first admin, and starts a database-backed queue worker. It installs only the website; 3x-ui remains on its separate server. The installer stores application data under `/var/lib/vpnsite`, can resume an interrupted installation, and refuses to overwrite a completed or unrelated installation.
+Установщик проверяет ОС и домен, сверяет DNS-записи A/AAAA с публичными IP VPS, проверяет доступность TCP-портов 80 и 443 и анализирует локальный firewall. Если автоматическое определение публичного IP недоступно, он попросит ввести адреса явно. Правила локального firewall автоматически не меняются: при активной фильтрации установщик остановится и попросит разрешить нужные порты; если локальная фильтрация не обнаружена, он запросит подтверждение, что порты разрешены в firewall провайдера VPS. Скрипт отказывается молча перезаписывать посторонние данные и сообщает, если существующая конфигурация мешает установке. Он не подключается к серверам 3x-ui и не запрашивает платёжные секреты. При повторном запуске следуйте сообщению установщика: завершённую установку нельзя бездумно перезаписывать.
 
-After installation, add the YooKassa and Telegram credentials to `/var/www/vpnsite/.env`, then clear the cached configuration:
+Вручную запускать установку на рабочем VPS без резервной копии не следует. Перед использованием проверьте содержимое bootstrap-скрипта и адаптируйте ветку/команду согласно вашей политике развёртывания.
 
-```sh
-sudo -u vpnsite php /var/www/vpnsite/artisan config:clear
-sudo systemctl restart vpnsite-worker php8.3-fpm
+## Настройка оплат
+
+Учётные данные ЮKassa и Telegram Bot можно задать в `/admin`. Поля секретов при повторном открытии пустые: сохранённые значения не показываются в браузере. Они шифруются Laravel при хранении в SQLite с помощью `APP_KEY`.
+
+Если credentials не сохранены в админ-панели, приложение продолжает использовать прежние переменные сервера из `.env`. Очистка значений в админке удаляет только сохранённый override и возвращает к конфигурации `.env`. Чтобы отключить способ оплаты, выключите его переключатель в админ-панели; если вы используете `.env`, удалите соответствующую серверную настройку отдельно.
+
+### ЮKassa
+
+Для получения уведомлений настройте URL:
+
+```text
+https://ваш-домен.example/webhooks/yookassa
 ```
 
-Keep `.env` private and backed up securely. Back up `/var/lib/vpnsite/database.sqlite` and the Laravel `APP_KEY` together: the key is required to decrypt stored panel credentials.
+Приложение не доверяет уведомлению само по себе: оно запрашивает платёж у ЮKassa и сверяет ID платежа, заказ, сумму, валюту RUB и статус `succeeded`. Повторные уведомления не добавляют срок подписки или трафик повторно.
+
+Если для магазина требуются фискальные чеки, укажите `YOOKASSA_RECEIPT_VAT_CODE` и при необходимости `YOOKASSA_TAX_SYSTEM_CODE` в серверном `.env` согласно настройкам продавца и его налоговым требованиям.
+
+### Telegram-бот и Telegram Stars
+
+В серверном `.env` остаются `TELEGRAM_WEBHOOK_SECRET` и имя бота `TELEGRAM_BOT_NAME`; секрет webhook нельзя задавать в браузере. Настройте вебхук на:
+
+```text
+https://ваш-домен.example/webhooks/telegram
+```
+
+Передайте Telegram тот же секрет в заголовке `X-Telegram-Bot-Api-Secret-Token`. Пользователь создаёт одноразовую ссылку привязки Telegram в личном кабинете. Бот поддерживает команды `/plans` и `/renew`.
+
+Чтобы включить Telegram Stars:
+
+1. Сохраните токен бота в `/admin` либо настройте `TELEGRAM_BOT_TOKEN` на сервере.
+2. Разрешите Telegram Stars в настройках способов оплаты.
+3. Укажите целую цену в Stars для нужного тарифа.
+
+Счёт создаётся через Telegram Payments в валюте `XTR`. Заказ подтверждается только после проверки `pre_checkout_query` и получения `successful_payment` через защищённый webhook. Подписка выдаётся через ту же очередь, что и при оплате ЮKassa.
+
+### Подготовительные настройки криптовалюты
+
+В `/admin` можно сохранить актив, сеть, требуемое число подтверждений, срок ожидания оплаты и внутреннюю заметку. Эти поля **не запускают криптооплату**: приложение не создаёт адрес кошелька, не проверяет транзакцию и не отмечает заказ оплаченным. Криптопровайдер и его API должны быть выбраны и интегрированы отдельно.
+
+## Подключение панелей 3x-ui
+
+В `/admin` добавьте HTTPS API URL панели, URL-префикс подписки, логин и пароль, inbound ID, протокол и при необходимости flow. Пароль панели шифруется при хранении. Сайт вызывает API панели только со своего сервера; учётные данные не отправляются в браузер.
+
+Панель каждому пользователю назначается администратором. Оплаченный заказ без назначенной панели ждёт в статусе `paid_unassigned`; после назначения выдача ставится в очередь. Ошибки API видны администратору и допускают повторную обработку.
+
+API и inbound-настройки могут различаться между версиями 3x-ui. До приёма платежей проверьте версию панели и конфигурацию inbound.
+
+## Защита и резервные копии
+
+- Не отправляйте credentials в чат и не сохраняйте их в Git.
+- Файл `.env` и SQLite-база исключены из Git; реальные ключи указывайте только на сервере или в защищённой админ-панели.
+- Храните `APP_KEY` отдельно и делайте резервные копии вместе с `/var/lib/vpnsite/database.sqlite`: без исходного ключа нельзя расшифровать учётные данные панелей и платёжных сервисов.
+- После изменения или восстановления `APP_KEY` сохранённые зашифрованные credentials потребуют повторного ввода.

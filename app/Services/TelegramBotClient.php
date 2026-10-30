@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Models\PaymentSettings;
 use Illuminate\Support\Facades\Http;
 use RuntimeException;
 
@@ -9,7 +10,7 @@ class TelegramBotClient
 {
     public function configured(): bool
     {
-        return filled(config('services.telegram.bot_token'));
+        return filled(PaymentSettings::current()->telegramBotToken());
     }
 
     public function sendMessage(string $chatId, string $text, array $keyboard = []): void
@@ -58,9 +59,15 @@ class TelegramBotClient
             throw new RuntimeException('Telegram bot is not configured.');
         }
 
+        $token = PaymentSettings::current()->telegramBotToken();
+
+        if (! filled($token)) {
+            throw new RuntimeException('Telegram bot is not configured.');
+        }
+
         $response = Http::asJson()
             ->timeout($timeoutSeconds)
-            ->post('https://api.telegram.org/bot'.config('services.telegram.bot_token').'/'.$method, $payload);
+            ->post('https://api.telegram.org/bot'.$token.'/'.$method, $payload);
 
         if (! $response->successful() || ! $response->json('ok')) {
             throw new RuntimeException('Telegram API request failed.');

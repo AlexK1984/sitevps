@@ -16,11 +16,43 @@
             <h3>Доступные способы</h3>
             <input type="hidden" name="yookassa_enabled" value="0">
             <label class="checkbox"><input type="checkbox" name="yookassa_enabled" value="1" @checked($paymentSettings->yookassa_enabled)> Разрешить оплату через ЮKassa</label>
-            <p class="muted">Shop ID и секретный ключ остаются только в серверном файле .env.</p>
+            <p class="muted">Платёжные реквизиты задаются ниже или остаются в серверном файле .env.</p>
             <input type="hidden" name="telegram_stars_enabled" value="0">
             <label class="checkbox"><input type="checkbox" name="telegram_stars_enabled" value="1" @checked($paymentSettings->telegram_stars_enabled)> Разрешить Telegram Stars в боте</label>
-            <p class="muted">Токен бота и секрет webhook задаются только в .env. Для каждого тарифа укажите отдельную цену в Stars ниже.</p>
+            <p class="muted">Токен бота задаётся выше или в .env; секрет webhook остаётся в .env. Для каждого тарифа укажите цену в Stars ниже.</p>
             <button class="button button-full" type="submit">Сохранить способы оплаты</button>
+        </form>
+        <form class="panel-card admin-form" method="post" action="{{ route('admin.payment-credentials.update') }}" autocomplete="off">
+            @csrf @method('PUT')
+            <h3>Учётные данные сервисов</h3>
+            <p class="muted">
+                ЮKassa:
+                @if($paymentSettings->yookassa_configured_in_admin)
+                    настроена в админ-панели
+                @elseif($paymentSettings->yookassa_configured)
+                    используется конфигурация сервера (.env)
+                @else
+                    не настроена
+                @endif
+            </p>
+            <label>Shop ID<input type="password" name="yookassa_shop_id" maxlength="255" autocomplete="new-password" placeholder="Оставьте пустым, чтобы не менять"></label>
+            <label>Секретный ключ<input type="password" name="yookassa_secret_key" maxlength="500" autocomplete="new-password" placeholder="Оставьте пустым, чтобы не менять"></label>
+            <label class="checkbox"><input type="checkbox" name="clear_yookassa" value="1"> Удалить сохранённые данные ЮKassa и вернуться к .env</label>
+
+            <p class="muted">
+                Telegram Bot:
+                @if($paymentSettings->telegram_configured_in_admin)
+                    токен задан в админ-панели
+                @elseif($paymentSettings->telegram_configured)
+                    используется конфигурация сервера (.env)
+                @else
+                    не настроен
+                @endif
+            </p>
+            <label>Токен Telegram-бота<input type="password" name="telegram_bot_token" maxlength="500" autocomplete="new-password" placeholder="Оставьте пустым, чтобы не менять"></label>
+            <label class="checkbox"><input type="checkbox" name="clear_telegram" value="1"> Удалить сохранённый токен и вернуться к .env</label>
+            <p class="fine-print">Значения шифруются ключом APP_KEY в базе. Секрет webhook Telegram по-прежнему задаётся только на сервере в .env. Секретные поля не сохраняются при ошибке проверки формы.</p>
+            <button class="button button-full" type="submit">Сохранить учётные данные</button>
         </form>
         <form class="panel-card admin-form" method="post" action="{{ route('admin.payment-settings.update') }}">
             @csrf @method('PUT')
