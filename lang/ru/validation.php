@@ -1,0 +1,45 @@
+<?php
+
+return [
+    'accepted' => 'Поле :attribute должно быть принято.',
+    'alpha_dash' => 'Поле :attribute может содержать только буквы, цифры, дефисы и подчёркивания.',
+    'boolean' => 'Поле :attribute должно иметь значение true или false.',
+    'confirmed' => 'Подтверждение поля :attribute не совпадает.',
+    'email' => 'Укажите корректный адрес электронной почты.',
+    'exists' => 'Выбранное значение поля :attribute недействительно.',
+    'gt' => [
+        'numeric' => 'Значение поля :attribute должно быть больше :value.',
+    ],
+    'in' => 'Выбранное значение поля :attribute недействительно.',
+    'integer' => 'Поле :attribute должно быть целым числом.',
+    'max' => [
+        'numeric' => 'Значение поля :attribute не может быть больше :max.',
+        'string' => 'Поле :attribute не может содержать более :max символов.',
+    ],
+    'min' => [
+        'numeric' => 'Значение поля :attribute должно быть не меньше :min.',
+        'string' => 'Поле :attribute должно содержать не менее :min символов.',
+    ],
+    'numeric' => 'Поле :attribute должно быть числом.',
+    'not_regex' => 'Формат поля :attribute недействителен.',
+    'regex' => 'Формат поля :attribute недействителен.',
+    'required' => 'Заполните поле :attribute.',
+    'string' => 'Поле :attribute должно быть строкой.',
+    'unique' => 'Это значение поля :attribute уже используется.',
+    'url' => 'Поле :attribute должно содержать корректный HTTPS-адрес.',
+    'attributes' => [
+        'name' => 'название',
+        'email' => 'электронная почта',
+        'password' => 'пароль',
+        'slug' => 'идентификатор',
+        'price_rubles' => 'цена',
+        'duration_days' => 'срок',
+        'traffic_gb' => 'объём трафика',
+        'connection_limit' => 'лимит подключений',
+        'base_url' => 'адрес панели',
+        'subscription_url_prefix' => 'префикс ссылки подписки',
+        'username' => 'имя пользователя панели',
+        'inbound_id' => 'ID inbound',
+        'assigned_panel_id' => 'панель',
+    ],
+];

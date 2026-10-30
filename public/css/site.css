@@ -1,0 +1,734 @@
+:root{
+  font-family:"Segoe UI",Arial,sans-serif;
+  color:#14251e;
+  background:#f7f9f6;
+  font-synthesis:none;
+  text-rendering:optimizeLegibility;
+  --green:#1d6b4c;
+  --mint:#dff4e8;
+  --ink:#14251e;
+  --muted:#75817b;
+  --line:#e4eae5;
+  --paper:#fff
+}
+
+*{
+  box-sizing:border-box
+}
+body{
+  margin:0;
+  min-width:320px
+}
+a{
+  color:inherit;
+  text-decoration:none
+}
+.topbar{
+  height:78px;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  padding:0 max(calc((100vw - 1180px)/2),6vw);
+  background:#fff;
+  border-bottom:1px solid #edf0ed
+}
+.brand{
+  display:flex;
+  align-items:center;
+  gap:11px;
+  font:800 19px Segoe UI,sans-serif;
+  letter-spacing:-.7px
+}
+.brand-mark{
+  display:grid;
+  place-items:center;
+  width:34px;
+  height:34px;
+  border-radius:11px;
+  background:var(--green);
+  color:white;
+  font-size:17px
+}
+.topbar nav{
+  display:flex;
+  align-items:center;
+  gap:28px;
+  font-size:14px;
+  color:#516058
+}
+.inline-form{
+  display:inline
+}
+.nav-button{
+  border:0;
+  background:none;
+  color:inherit;
+  font:inherit;
+  cursor:pointer
+}
+.page{
+  max-width:1180px;
+  margin:0 auto;
+  padding:0 24px
+}
+.button{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  gap:15px;
+  padding:14px 20px;
+  border:1px solid var(--green);
+  border-radius:8px;
+  background:var(--green);
+  color:white;
+  font-weight:700;
+  font-size:14px;
+  cursor:pointer;
+  transition:transform .15s,background .15s
+}
+.button:hover{
+  background:#15553b;
+  transform:translateY(-1px)
+}
+.button-small{
+  padding:10px 15px;
+  font-size:13px
+}
+.button-outline{
+  background:#fff;
+  color:var(--green)
+}
+.button-outline:hover{
+  background:#eff8f2
+}
+.button-full{
+  width:100%
+}
+.button-danger{
+  background:#fff;
+  color:#a33;
+  border-color:#e4baba
+}
+.button-danger:hover{
+  background:#fff4f4
+}
+.hero{
+  display:grid;
+  grid-template-columns:1.04fr .96fr;
+  min-height:510px;
+  align-items:center;
+  padding:56px 0 42px
+}
+.hero-copy{
+  max-width:535px
+}
+.eyebrow{
+  display:block;
+  color:var(--green);
+  font-size:11px;
+  font-weight:700;
+  letter-spacing:1.7px
+}
+.hero .eyebrow{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  text-transform:uppercase
+}
+.pulse{
+  width:8px;
+  height:8px;
+  display:inline-block;
+  border-radius:50%;
+  background:#5fc48c;
+  box-shadow:0 0 0 4px #dff3e7
+}
+.hero h1,.auth-card h1,.dashboard-head h1{
+  font:800 clamp(42px,5vw,68px)/1.07 Segoe UI,sans-serif;
+  letter-spacing:-3px;
+  margin:24px 0 18px
+}
+.hero h1 span{
+  color:var(--green)
+}
+.hero-copy>p{
+  max-width:440px;
+  color:#718078;
+  font-size:17px;
+  line-height:1.7;
+  margin-bottom:28px
+}
+.hero-facts{
+  display:flex;
+  gap:24px;
+  margin-top:27px;
+  color:#728077;
+  font-size:12px
+}
+.hero-facts span:first-child{
+  color:var(--green)
+}
+.hero-art{
+  height:380px;
+  position:relative;
+  display:grid;
+  place-items:center
+}
+.orbit{
+  position:absolute;
+  border:1px solid #dfece4;
+  border-radius:50%;
+  transform:rotate(-25deg)
+}
+.orbit-one{
+  width:360px;
+  height:220px
+}
+.orbit-two{
+  width:280px;
+  height:370px;
+  transform:rotate(56deg)
+}
+.shield{
+  width:162px;
+  height:185px;
+  display:grid;
+  place-items:center;
+  clip-path:polygon(50% 0,94% 18%,88% 66%,50% 100%,12% 66%,6% 18%);
+  background:linear-gradient(145deg,#2c8c62,#15593d);
+  color:white;
+  font:800 75px Segoe UI,sans-serif;
+  box-shadow:0 30px 60px #225b4140
+}
+.art-caption{
+  position:absolute;
+  bottom:13px;
+  right:4%;
+  display:flex;
+  gap:10px;
+  align-items:center;
+  padding:12px 16px;
+  border:1px solid var(--line);
+  border-radius:9px;
+  background:#fff;
+  box-shadow:0 12px 36px #1935230a;
+  color:#57645d;
+  font-size:12px
+}
+.section{
+  padding:48px 0 56px
+}
+.section-heading{
+  display:flex;
+  align-items:end;
+  justify-content:space-between;
+  margin-bottom:23px
+}
+.section-heading h2,.how-it-works h2,.panel-card h2{
+  font:700 29px Segoe UI,sans-serif;
+  letter-spacing:-1.1px;
+  margin:8px 0 0
+}
+.section-heading>p{
+  font-size:12px;
+  line-height:1.6;
+  color:var(--muted);
+  margin:0 0 3px
+}
+.plan-grid{
+  display:grid;
+  grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:18px
+}
+.plan-card{
+  background:white;
+  border:1px solid var(--line);
+  border-radius:12px;
+  padding:25px;
+  box-shadow:0 9px 26px #173a2510
+}
+.plan-card:nth-child(2){
+  border-color:#a9d8bd;
+  box-shadow:0 12px 38px #20614115
+}
+.plan-icon{
+  width:35px;
+  height:35px;
+  display:grid;
+  place-items:center;
+  background:var(--mint);
+  border-radius:10px;
+  color:var(--green);
+  font-size:18px
+}
+.plan-card h3{
+  font:700 19px Segoe UI,sans-serif;
+  margin:19px 0 6px
+}
+.plan-description{
+  height:36px;
+  font-size:12px;
+  line-height:1.5;
+  color:var(--muted);
+  margin:0
+}
+.plan-price{
+  font:800 27px Segoe UI,sans-serif;
+  letter-spacing:-1px;
+  margin:19px 0 13px
+}
+.plan-price small{
+  font:500 11px "Segoe UI",sans-serif;
+  color:var(--muted);
+  letter-spacing:0
+}
+.feature-list{
+  list-style:none;
+  padding:0;
+  margin:0 0 20px;
+  border-top:1px solid #edf0ed
+}
+.feature-list li{
+  padding:10px 0;
+  border-bottom:1px solid #edf0ed;
+  font-size:12px;
+  color:#59675f
+}
+.feature-list li span{
+  color:var(--green);
+  padding-right:7px
+}
+.plan-card>.button,.plan-card form{
+  width:100%
+}
+.fine-print{
+  display:block;
+  margin-top:12px;
+  color:#89958e;
+  font-size:10px;
+  line-height:1.5
+}
+.how-it-works{
+  padding:46px 0 62px;
+  border-top:1px solid var(--line)
+}
+.steps{
+  display:grid;
+  grid-template-columns:repeat(3,1fr);
+  gap:30px;
+  margin-top:26px
+}
+.steps>div{
+  border-top:1px solid var(--line);
+  padding-top:17px
+}
+.steps span{
+  font-size:12px;
+  font-weight:700;
+  color:var(--green)
+}
+.steps h3{
+  font:700 15px Segoe UI,sans-serif;
+  margin:13px 0 6px
+}
+.steps p{
+  font-size:12px;
+  line-height:1.6;
+  color:var(--muted);
+  margin:0
+}
+.footer{
+  text-align:center;
+  border-top:1px solid var(--line);
+  padding:24px;
+  color:#8a958e;
+  font-size:11px
+}
+.auth-wrap{
+  display:grid;
+  place-items:center;
+  min-height:calc(100vh - 160px);
+  padding:55px 0
+}
+.auth-card{
+  width:min(100%,440px);
+  padding:35px;
+  border:1px solid var(--line);
+  border-radius:14px;
+  background:white;
+  box-shadow:0 16px 50px #173a250d
+}
+.auth-card h1{
+  font-size:29px;
+  letter-spacing:-1.3px;
+  margin:12px 0 7px
+}
+.auth-card>p,.dashboard-head p{
+  font-size:13px;
+  color:var(--muted);
+  margin:0 0 24px
+}
+.auth-card label,.admin-form label{
+  display:block;
+  margin:15px 0;
+  color:#46554c;
+  font-size:12px;
+  font-weight:600
+}
+.auth-card input,.admin-form input,.admin-form textarea,.admin-form select,.table-wrap select{
+  display:block;
+  width:100%;
+  margin-top:7px;
+  padding:11px 12px;
+  border:1px solid #dbe3dd;
+  border-radius:7px;
+  background:#fff;
+  color:var(--ink);
+  font:13px "Segoe UI",sans-serif;
+  outline:none
+}
+.auth-card input:focus,.admin-form input:focus,.admin-form textarea:focus,.admin-form select:focus{
+  border-color:#75b793;
+  box-shadow:0 0 0 3px #dff4e8
+}
+.auth-card label.checkbox,.admin-form label.checkbox{
+  display:flex;
+  align-items:center;
+  gap:8px
+}
+.checkbox input{
+  width:auto;
+  margin:0
+}
+.auth-switch{
+  text-align:center;
+  margin-top:19px;
+  color:var(--muted);
+  font-size:12px
+}
+.auth-switch a{
+  color:var(--green);
+  font-weight:700
+}
+.notice{
+  padding:13px 16px;
+  border-radius:8px;
+  margin:16px 0;
+  font-size:13px
+}
+.notice-success{
+  background:#e8f7ed;
+  color:#216040
+}
+.notice-error{
+  background:#fff1ef;
+  color:#873c33
+}
+.notice ul{
+  margin:7px 0 0;
+  padding-left:18px
+}
+.dashboard-head{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  padding:48px 0 24px
+}
+.dashboard-head h1{
+  font-size:35px;
+  letter-spacing:-1.4px;
+  margin:9px 0
+}
+.dashboard-grid{
+  display:grid;
+  grid-template-columns:1.2fr .8fr;
+  gap:18px
+}
+.panel-card{
+  background:white;
+  border:1px solid var(--line);
+  border-radius:12px;
+  padding:24px
+}
+.card-heading{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px
+}
+.card-heading h2,.card-heading h3{
+  margin:7px 0 0;
+  font:700 18px Segoe UI,sans-serif
+}
+.card-heading h3{
+  margin:0;
+  font-size:15px
+}
+.status-pill{
+  display:inline-flex;
+  padding:6px 10px;
+  border-radius:99px;
+  background:#f1f3f1;
+  color:#59655e;
+  font-size:10px;
+  font-weight:700;
+  white-space:nowrap
+}
+.status-active{
+  background:#e3f6e9;
+  color:#216b46
+}
+.subscription-details{
+  display:grid;
+  grid-template-columns:repeat(2,1fr);
+  gap:15px;
+  padding:20px 0 10px
+}
+.subscription-details div span,.link-box span{
+  display:block;
+  font-size:10px;
+  color:var(--muted);
+  margin-bottom:5px
+}
+.subscription-details strong{
+  font-size:13px
+}
+.telegram-card>p,.muted{
+  color:var(--muted);
+  font-size:12px;
+  line-height:1.6
+}
+.telegram-card h2{
+  font-size:19px;
+  margin:9px 0
+}
+.link-box{
+  margin-top:18px;
+  padding:12px;
+  border-radius:8px;
+  background:#f0f8f2
+}
+.link-box a{
+  font-size:12px;
+  color:var(--green);
+  font-weight:700
+}
+.compact-section{
+  padding:35px 0 25px
+}
+.compact-section .section-heading h2{
+  font-size:24px
+}
+.plan-grid-small{
+  grid-template-columns:repeat(3,minmax(0,1fr))
+}
+.plan-grid-small .plan-card{
+  padding:19px
+}
+.plan-grid-small .plan-price{
+  font-size:22px
+}
+.table-wrap{
+  overflow:auto;
+  border:1px solid var(--line);
+  border-radius:10px;
+  background:white
+}
+table{
+  width:100%;
+  border-collapse:collapse;
+  font-size:12px;
+  text-align:left
+}
+th,td{
+  padding:13px 15px;
+  border-bottom:1px solid #edf0ed;
+  vertical-align:middle
+}
+th{
+  background:#fafcf9;
+  color:#78837c;
+  font-size:10px;
+  text-transform:uppercase;
+  letter-spacing:.5px
+}
+tr:last-child td{
+  border-bottom:0
+}
+.empty-cell{
+  text-align:center;
+  color:var(--muted);
+  padding:23px
+}
+.empty-state{
+  padding:27px;
+  border:1px dashed #cfdad2;
+  border-radius:10px;
+  color:var(--muted);
+  background:#fbfcfb;
+  font-size:13px
+}
+.admin-section{
+  padding:30px 0;
+  border-top:1px solid var(--line)
+}
+.admin-section>.muted{
+  margin:0 0 18px
+}
+.admin-grid{
+  display:grid;
+  grid-template-columns: minmax(250px,.8fr) minmax(0,1.2fr);
+  gap:16px;
+  align-items:start
+}
+.admin-form h3{
+  font:700 15px Segoe UI,sans-serif;
+  margin:0 0 14px
+}
+.admin-form{
+  padding:19px
+}
+.admin-form label{
+  margin:11px 0
+}
+.admin-form textarea{
+  resize:vertical
+}
+.admin-list{
+  display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(280px,1fr));
+  gap:13px
+}
+.form-grid{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:10px
+}
+.pagination{
+  padding:16px
+}
+.pagination nav{
+  display:flex;
+  justify-content:space-between;
+  color:var(--muted);
+  font-size:12px
+}
+.pagination svg{
+  width:14px
+}
+.pagination a,.pagination span{
+  padding:5px
+}
+.table-wrap .button{
+  white-space:nowrap
+}
+
+@media(max-width:850px){
+  .hero{
+  grid-template-columns:1fr;
+  min-height:0;
+  padding:55px 0 30px
+}
+.hero-art{
+  height:280px;
+  order:-1
+}
+.hero-copy{
+  padding:0 0 30px
+}
+.shield{
+  transform:scale(.8)
+}
+.orbit-one{
+  width:280px
+}
+.orbit-two{
+  height:280px
+}
+.hero h1{
+  font-size:50px
+}
+.plan-grid,.plan-grid-small{
+  grid-template-columns:repeat(2,minmax(0,1fr))
+}
+.dashboard-grid{
+  grid-template-columns:1fr
+}
+.admin-grid{
+  grid-template-columns:1fr
+}
+.topbar{
+  padding:0 20px
+}
+
+}
+
+@media(max-width:560px){
+  .page{
+  padding:0 16px
+}
+.topbar{
+  height:65px
+}
+.topbar nav{
+  gap:12px;
+  font-size:12px
+}
+.topbar nav>a:first-child{
+  display:none
+}
+.brand{
+  font-size:16px
+}
+.hero h1{
+  font-size:43px
+}
+.hero-art{
+  height:230px
+}
+.hero-facts{
+  gap:12px;
+  flex-wrap:wrap
+}
+.section-heading{
+  align-items:flex-start;
+  gap:13px;
+  flex-direction:column
+}
+.section-heading h2,.how-it-works h2{
+  font-size:24px
+}
+.plan-grid,.plan-grid-small,.steps{
+  grid-template-columns:1fr
+}
+.plan-description{
+  height:auto
+}
+.plan-card{
+  padding:20px
+}
+.dashboard-head{
+  align-items:flex-start;
+  gap:16px;
+  flex-direction:column
+}
+.dashboard-head h1{
+  font-size:29px
+}
+.subscription-details{
+  gap:12px
+}
+.auth-card{
+  padding:25px 20px
+}
+.form-grid{
+  grid-template-columns:1fr
+}
+.footer{
+  padding:20px 15px
+}
+.admin-list{
+  grid-template-columns:1fr
+}
+
+}

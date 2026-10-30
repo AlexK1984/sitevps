@@ -1,0 +1,194 @@
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Jobs\ProvisionSubscription;
+use App\Models\Order;
+use App\Models\Panel;
+use App\Models\PaymentSettings;
+use App\Models\Tariff;
+use App\Models\User;
+use Illuminate\Http\RedirectResponse;
+use Illuminate\Http\Request;
+use Illuminate\View\View;
+
+class AdminController extends Controller
+{
+    public function index(): View
+    {
+        return view('admin.index', [
+            'users' => User::query()->with('assignedPanel')->orderBy('id')->paginate(30, ['*'], 'users'),
+            'tariffs' => Tariff::query()->orderBy('id')->get(),
+            'panels' => Panel::query()->orderBy('name')->get(),
+            'orders' => Order::query()->with(['user', 'tariff', 'panel'])->latest()->limit(100)->get(),
+            'paymentSettings' => PaymentSettings::current(),
+        ]);
+    }
+
+    public function storeTariff(Request $request): RedirectResponse
+    {
+        $validated = $request->validate([
+            'name' => ['required', 'string', 'max:120'],
+            'slug' => ['required', 'alpha_dash:ascii', 'max:120', 'unique:tariffs,slug'],
+            'description' => ['nullable', 'string', 'max:1000'],
+            'price_rubles' => ['required', 'numeric', 'gt:0', 'regex:/^\d{1,8}(?:\.\d{1,2})?$/'],
+            'price_stars' => ['nullable', 'integer', 'min:1', 'max:10000000'],
+            'duration_days' => ['required', 'integer', 'min:1', 'max:3650'],
+            'traffic_gb' => ['required', 'integer', 'min:1', 'max:100000'],
+            'connection_limit' => ['required', 'integer', 'min:1', 'max:100'],
+        ]);
+
+        $validated['price_kopecks'] = $this->priceToKopecks($validated['price_rubles']);
+        unset($validated['price_rubles']);
+        Tariff::create($validated + ['is_active' => $request->boolean('is_active')]);
+
+        return back()->with('status', 'Тариф создан.');
+    }
+
+    public function updateTariff(Request $request, Tariff $tariff): RedirectResponse
+    {
+        $validated = $request->validate([
+            'name' => ['required', 'string', 'max:120'],
+            'slug' => ['required', 'alpha_dash:ascii', 'max:120', 'unique:tariffs,slug,'.$tariff->id],
+            'description' => ['nullable', 'string', 'max:1000'],
+            'price_rubles' => ['required', 'numeric', 'gt:0', 'regex:/^\d{1,8}(?:\.\d{1,2})?$/'],
+            'price_stars' => ['nullable', 'integer', 'min:1', 'max:10000000'],
+            'duration_days' => ['required', 'integer', 'min:1', 'max:3650'],
+            'traffic_gb' => ['required', 'integer', 'min:1', 'max:100000'],
+            'connection_limit' => ['required', 'integer', 'min:1', 'max:100'],
+        ]);
+
+        $validated['price_kopecks'] = $this->priceToKopecks($validated['price_rubles']);
+        unset($validated['price_rubles']);
+        $tariff->update($validated + ['is_active' => $request->boolean('is_active')]);
+
+        return back()->with('status', 'Тариф обновлён.');
+    }
+
+    public function updatePaymentSettings(Request $request): RedirectResponse
+    {
+        $validated = $request->validate([
+            'yookassa_enabled' => ['required', 'boolean'],
+            'telegram_stars_enabled' => ['required', 'boolean'],
+            'crypto_asset' => ['nullable', 'string', 'max:20', 'regex:/^[A-Za-z0-9._-]+$/'],
+            'crypto_network' => ['nullable', 'string', 'max:80'],
+            'crypto_confirmations' => ['nullable', 'integer', 'min:1', 'max:1000'],
+            'crypto_payment_ttl_minutes' => ['nullable', 'integer', 'min:1', 'max:1440'],
+            'crypto_admin_notes' => ['nullable', 'string', 'max:2000'],
+        ]);
+
+        PaymentSettings::current()->update($validated);
+
+        return back()->with('status', 'Настройки способов оплаты сохранены.');
+    }
+
+    public function storePanel(Request $request): RedirectResponse
+    {
+        $validated = $request->validate([
+            'name' => ['required', 'string', 'max:120'],
+            'base_url' => ['required', 'url:https', 'not_regex:/[?#]/', 'max:255'],
+            'subscription_url_prefix' => ['required', 'url:https', 'not_regex:/[?#]/', 'max:255'],
+            'username' => ['required', 'string', 'max:255'],
+            'password' => ['required', 'string', 'max:500'],
+            'inbound_id' => ['required', 'integer', 'min:1'],
+            'protocol' => ['required', 'in:vless,vmess,trojan,shadowsocks'],
+            'flow' => ['nullable', 'string', 'max:120'],
+        ]);
+
+        $validated['base_url'] = rtrim($validated['base_url'], '/');
+        Panel::create($validated);
+
+        return back()->with('status', 'Панель добавлена.');
+    }
+
+    public function updatePanel(Request $request, Panel $panel): RedirectResponse
+    {
+        $validated = $request->validate([
+            'name' => ['required', 'string', 'max:120'],
+            'base_url' => ['required', 'url:https', 'not_regex:/[?#]/', 'max:255'],
+            'subscription_url_prefix' => ['required', 'url:https', 'not_regex:/[?#]/', 'max:255'],
+            'username' => ['required', 'string', 'max:255'],
+            'password' => ['nullable', 'string', 'max:500'],
+            'inbound_id' => ['required', 'integer', 'min:1'],
+            'protocol' => ['required', 'in:vless,vmess,trojan,shadowsocks'],
+            'flow' => ['nullable', 'string', 'max:120'],
+        ]);
+
+        $validated['base_url'] = rtrim($validated['base_url'], '/');
+
+        if (blank($validated['password'] ?? null)) {
+            unset($validated['password']);
+        }
+
+        if ($panel->subscriptions()->exists()
+            && ($validated['base_url'] !== $panel->base_url
+                || (int) $validated['inbound_id'] !== (int) $panel->inbound_id
+                || $validated['protocol'] !== $panel->protocol)) {
+            return back()->withErrors([
+                'panel' => 'Нельзя менять сервер или inbound панели с активными подписками. Перенесите клиентов отдельно.',
+            ]);
+        }
+
+        $panel->update($validated);
+
+        return back()->with('status', 'Панель обновлена.');
+    }
+
+    public function assignPanel(Request $request, User $user): RedirectResponse
+    {
+        $validated = $request->validate([
+            'assigned_panel_id' => ['nullable', 'integer', 'exists:panels,id'],
+        ]);
+
+        if ($user->subscription()->where('status', 'active')->where('expires_at', '>', now())->exists()
+            && (int) $user->assigned_panel_id !== (int) ($validated['assigned_panel_id'] ?? 0)) {
+            return back()->withErrors([
+                'panel' => 'У пользователя есть активная подписка. Перенесите клиента со старой панели отдельно.',
+            ]);
+        }
+
+        $user->update($validated);
+
+        if ($user->assigned_panel_id) {
+            $user->orders()
+                ->where('status', 'paid_unassigned')
+                ->pluck('id')
+                ->each(fn (int $orderId) => ProvisionSubscription::dispatch($orderId));
+        }
+
+        return back()->with('status', 'Назначение панели обновлено.');
+    }
+
+    public function retryProvisioning(Order $order): RedirectResponse
+    {
+        abort_unless(in_array($order->status, ['paid_unassigned', 'provisioning_failed'], true), 409);
+
+        if (! $order->user()->value('assigned_panel_id')) {
+            return back()->withErrors(['panel' => 'Сначала назначьте панель этому пользователю.']);
+        }
+
+        ProvisionSubscription::dispatch($order->id);
+
+        return back()->with('status', 'Выдача доступа поставлена в очередь.');
+    }
+
+    public function deletePanel(Panel $panel): RedirectResponse
+    {
+        if ($panel->subscriptions()->exists()) {
+            return back()->withErrors([
+                'panel' => 'Нельзя удалить панель с существующими подписками. Сначала перенесите клиентов.',
+            ]);
+        }
+
+        $panel->delete();
+
+        return back()->with('status', 'Панель удалена; назначения на неё очищены.');
+    }
+
+    private function priceToKopecks(string $price): int
+    {
+        [$rubles, $kopecks] = array_pad(explode('.', $price, 2), 2, '0');
+
+        return ((int) $rubles * 100) + (int) str_pad($kopecks, 2, '0');
+    }
+}
