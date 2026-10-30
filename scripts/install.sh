@@ -50,6 +50,10 @@ normalize_public_ip() {
     python3 "$(dirname -- "${BASH_SOURCE[0]}")/normalize-public-ip.py" "$1"
 }
 
+normalize_email() {
+    python3 "$(dirname -- "${BASH_SOURCE[0]}")/validate-email.py" "$1"
+}
+
 detect_public_ip() {
     local family="$1"
     local response=""
@@ -314,14 +318,12 @@ for dns_address in "${DNS_ADDRESSES[@]}"; do
 done
 
 read -r -u 3 -p "Email address for Let's Encrypt: " CERT_EMAIL || fail "A certificate email address is required."
-if [[ ! "$CERT_EMAIL" =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ ]]; then
-    fail "Enter a valid certificate email address."
-fi
+CERT_EMAIL="$(normalize_email "$CERT_EMAIL")" ||
+    fail "The certificate email could not be validated. Type it manually without spaces and try again."
 
 read -r -u 3 -p "Administrator email: " ADMIN_EMAIL || fail "An administrator email address is required."
-if [[ ! "$ADMIN_EMAIL" =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ ]]; then
-    fail "Enter a valid administrator email address."
-fi
+ADMIN_EMAIL="$(normalize_email "$ADMIN_EMAIL")" ||
+    fail "The administrator email could not be validated. Type it manually without spaces and try again."
 
 if path_exists "$APP_DIR/.env" && { [[ ! -f "$APP_DIR/.env" ]] || [[ -L "$APP_DIR/.env" ]]; }; then
     fail "$APP_DIR/.env is not a regular file; refusing to modify it."

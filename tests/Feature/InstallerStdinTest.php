@@ -125,4 +125,64 @@ class InstallerStdinTest extends TestCase
             $this->assertSame($expected, $output);
         }
     }
+
+    public function test_installer_validates_both_email_prompts_with_crlf_safe_validator(): void
+    {
+        $installer = file_get_contents(base_path('scripts/install.sh'));
+        $validator = base_path('scripts/validate-email.py');
+        $validatorSource = file_get_contents($validator);
+
+        $this->assertIsString($installer);
+        $this->assertIsString($validatorSource);
+        $this->assertStringContainsString('CERT_EMAIL="$(normalize_email "$CERT_EMAIL")"', $installer);
+        $this->assertStringContainsString('ADMIN_EMAIL="$(normalize_email "$ADMIN_EMAIL")"', $installer);
+        $this->assertStringContainsString('email = email[:-1]', $validatorSource);
+        $this->assertStringContainsString('email.count("@") != 1', $validatorSource);
+
+        $python = PHP_OS_FAMILY === 'Windows' ? 'python' : 'python3';
+        $probe = proc_open(
+            [$python, '--version'],
+            [
+                0 => ['pipe', 'r'],
+                1 => ['pipe', 'w'],
+                2 => ['pipe', 'w'],
+            ],
+            $probePipes,
+        );
+        if (! is_resource($probe)) {
+            $this->markTestSkipped('Python 3 is required to exercise the installer email validator.');
+        }
+        fclose($probePipes[0]);
+        fclose($probePipes[1]);
+        fclose($probePipes[2]);
+        if (proc_close($probe) !== 0) {
+            $this->markTestSkipped('Python 3 is required to exercise the installer email validator.');
+        }
+
+        foreach ([
+            ['kryukov.lex@gmail.com', 'kryukov.lex@gmail.com', 0],
+            ["kryukov.lex@gmail.com\r", 'kryukov.lex@gmail.com', 0],
+            ['kryukov. lex@gmail.com', '', 1],
+            ['kryukov.lex@gmail', '', 1],
+        ] as [$input, $expectedOutput, $expectedStatus]) {
+            $process = proc_open(
+                [$python, $validator, $input],
+                [
+                    0 => ['pipe', 'r'],
+                    1 => ['pipe', 'w'],
+                    2 => ['pipe', 'w'],
+                ],
+                $pipes,
+            );
+
+            $this->assertIsResource($process, 'The email validator process must start.');
+            fclose($pipes[0]);
+            $output = trim(stream_get_contents($pipes[1]));
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+
+            $this->assertSame($expectedStatus, proc_close($process));
+            $this->assertSame($expectedOutput, $output);
+        }
+    }
 }
