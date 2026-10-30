@@ -41,4 +41,28 @@ class InstallerStdinTest extends TestCase
         $this->assertStringContainsString('An interactive terminal is required.', $bootstrap);
         $this->assertStringContainsString('An interactive terminal is required.', $installer);
     }
+
+    public function test_bootstrap_fast_forwards_only_a_verified_clean_existing_checkout(): void
+    {
+        $bootstrap = file_get_contents(base_path('scripts/bootstrap.sh'));
+
+        $this->assertIsString($bootstrap);
+        $cleanlinessCheck = strpos($bootstrap, 'git -C "$CHECKOUT_DIR" status --porcelain --untracked-files=all');
+        $fetch = strpos($bootstrap, 'git -C "$CHECKOUT_DIR" fetch --no-tags origin "$REPOSITORY_BRANCH"');
+        $ancestorCheck = strpos($bootstrap, 'git -C "$CHECKOUT_DIR" merge-base --is-ancestor HEAD FETCH_HEAD');
+        $fastForward = strpos($bootstrap, 'git -C "$CHECKOUT_DIR" merge --ff-only FETCH_HEAD');
+        $installerLaunch = strpos($bootstrap, 'exec bash "$CHECKOUT_DIR/scripts/install.sh"');
+
+        $this->assertNotFalse($cleanlinessCheck);
+        $this->assertNotFalse($fetch);
+        $this->assertNotFalse($ancestorCheck);
+        $this->assertNotFalse($fastForward);
+        $this->assertNotFalse($installerLaunch);
+        $this->assertLessThan($fetch, $cleanlinessCheck);
+        $this->assertLessThan($ancestorCheck, $fetch);
+        $this->assertLessThan($fastForward, $ancestorCheck);
+        $this->assertLessThan($installerLaunch, $fastForward);
+        $this->assertStringContainsString('refusing to replace or merge them', $bootstrap);
+        $this->assertStringNotContainsString('reset --hard', $bootstrap);
+    }
 }

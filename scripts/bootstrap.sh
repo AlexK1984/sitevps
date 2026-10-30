@@ -72,6 +72,15 @@ if [[ -e "$CHECKOUT_DIR" || -L "$CHECKOUT_DIR" ]]; then
     if [[ -n "$(git -C "$CHECKOUT_DIR" status --porcelain --untracked-files=all)" ]]; then
         fail "The installer checkout has local changes; preserve them and restore a clean checkout before retrying."
     fi
+    if ! git -C "$CHECKOUT_DIR" fetch --no-tags origin "$REPOSITORY_BRANCH"; then
+        fail "Cannot fetch the latest installer from origin; check the network and retry."
+    fi
+    if ! git -C "$CHECKOUT_DIR" merge-base --is-ancestor HEAD FETCH_HEAD; then
+        fail "The existing installer checkout contains commits not present on origin; refusing to replace or merge them."
+    fi
+    if ! git -C "$CHECKOUT_DIR" merge --ff-only FETCH_HEAD; then
+        fail "Cannot fast-forward the installer checkout; preserve it and resolve the branch state before retrying."
+    fi
 else
     mkdir -- "$CHECKOUT_DIR"
     CLONE_CREATED=1
