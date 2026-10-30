@@ -2,33 +2,55 @@
 
 namespace App\Http\Controllers;
 
+use App\Exceptions\InternalTestPaymentException;
 use App\Jobs\ProvisionSubscription;
 use App\Models\Order;
 use App\Models\Panel;
+use App\Models\PaymentEvent;
 use App\Models\PaymentSettings;
 use App\Models\Tariff;
 use App\Models\User;
+use App\Services\InternalTestPaymentService;
+use App\Services\PaymentEventLogger;
 use App\Services\ThreeXUiClient;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Validator;
+use Illuminate\Support\Str;
 use Illuminate\View\View;
 
 class AdminController extends Controller
 {
-    public function index(): View
+    public function index(Request $request): View
     {
         $settings = PaymentSettings::current();
         $yookassaCredentials = $settings->yookassaCredentials();
+        $eventProvider = $request->query('event_provider');
+        if (! in_array($eventProvider, ['yookassa', 'telegram_stars', 'internal_test'], true)) {
+            $eventProvider = null;
+        }
+
+        $paymentEvents = PaymentEvent::query()
+            ->with(['order.user', 'actor'])
+            ->when($eventProvider, fn ($query) => $query->where('provider', $eventProvider))
+            ->latest()
+            ->paginate(30, ['*'], 'payment_events')
+            ->withQueryString();
 
         return view('admin.index', [
             'users' => User::query()->with('assignedPanel')->orderBy('id')->paginate(30, ['*'], 'users'),
             'tariffs' => Tariff::query()->orderBy('id')->get(),
             'panels' => Panel::query()->orderBy('name')->get(),
             'orders' => Order::query()->with(['user', 'tariff', 'panel'])->latest()->limit(100)->get(),
+            'paymentEvents' => $paymentEvents,
+            'eventProvider' => $eventProvider,
+            'testPaymentUsers' => User::query()->whereNotNull('assigned_panel_id')->orderBy('email')->get(['id', 'email']),
+            'testPaymentTariffs' => Tariff::query()->where('is_active', true)->orderBy('id')->get(['id', 'name']),
+            'testPaymentIdempotencyKey' => (string) Str::uuid(),
             'paymentSettings' => (object) [
                 'yookassa_enabled' => $settings->yookassa_enabled,
                 'telegram_stars_enabled' => $settings->telegram_stars_enabled,
+                'internal_test_payments_enabled' => $settings->internal_test_payments_enabled,
                 'crypto_asset' => $settings->crypto_asset,
                 'crypto_network' => $settings->crypto_network,
                 'crypto_confirmations' => $settings->crypto_confirmations,
@@ -87,6 +109,7 @@ class AdminController extends Controller
         $validated = $request->validate([
             'yookassa_enabled' => ['required', 'boolean'],
             'telegram_stars_enabled' => ['required', 'boolean'],
+            'internal_test_payments_enabled' => ['sometimes', 'boolean'],
             'crypto_asset' => ['nullable', 'string', 'max:20', 'regex:/^[A-Za-z0-9._-]+$/'],
             'crypto_network' => ['nullable', 'string', 'max:80'],
             'crypto_confirmations' => ['nullable', 'integer', 'min:1', 'max:1000'],
@@ -94,9 +117,57 @@ class AdminController extends Controller
             'crypto_admin_notes' => ['nullable', 'string', 'max:2000'],
         ]);
 
-        PaymentSettings::current()->update($validated);
+        $settings = PaymentSettings::current();
+        $wasTestModeEnabled = $settings->internal_test_payments_enabled;
+        $validated['internal_test_payments_enabled'] = $request->boolean('internal_test_payments_enabled');
+        $settings->update($validated);
+
+        if ($wasTestModeEnabled !== $settings->internal_test_payments_enabled) {
+            app(PaymentEventLogger::class)->record(
+                'internal_test',
+                $settings->internal_test_payments_enabled ? 'test_mode_enabled' : 'test_mode_disabled',
+                $settings->internal_test_payments_enabled
+                    ? 'Администратор включил внутренний тестовый режим. Симуляция выдаёт реальный доступ на назначенной панели.'
+                    : 'Администратор выключил внутренний тестовый режим.',
+                actorId: $request->user()->id,
+            );
+        }
 
         return back()->with('status', 'Настройки способов оплаты сохранены.');
+    }
+
+    public function createTestPayment(
+        Request $request,
+        InternalTestPaymentService $testPayments,
+    ): RedirectResponse {
+        abort_unless(PaymentSettings::current()->internal_test_payments_enabled, 404);
+
+        $validated = $request->validate([
+            'user_id' => ['required', 'integer', 'exists:users,id'],
+            'tariff_id' => ['required', 'integer', 'exists:tariffs,id'],
+            'idempotency_key' => ['required', 'uuid'],
+        ]);
+        $user = User::query()->findOrFail($validated['user_id']);
+        $tariff = Tariff::query()->findOrFail($validated['tariff_id']);
+
+        try {
+            [$order, $created] = $testPayments->simulate(
+                $user,
+                $tariff,
+                $request->user(),
+                $validated['idempotency_key'],
+            );
+        } catch (InternalTestPaymentException $exception) {
+            return back()->withErrors(['test_payment' => $exception->getMessage()]);
+        }
+
+        if ($created) {
+            ProvisionSubscription::dispatch($order->id);
+        }
+
+        return back()->with('status', $created
+            ? 'Тестовый заказ создан и передан в обычную очередь выдачи на реальную панель.'
+            : 'Этот тестовый запрос уже был обработан; повторная выдача не запускалась.');
     }
 
     public function updatePaymentCredentials(Request $request): RedirectResponse
@@ -259,7 +330,19 @@ class AdminController extends Controller
             $user->orders()
                 ->where('status', 'paid_unassigned')
                 ->pluck('id')
-                ->each(fn (int $orderId) => ProvisionSubscription::dispatch($orderId));
+                ->each(function (int $orderId) use ($request): void {
+                    $order = Order::query()->findOrFail($orderId);
+                    app(PaymentEventLogger::class)->record(
+                        $order->is_test ? 'internal_test' : $order->payment_method,
+                        'provisioning_queued',
+                        'Панель назначена; оплаченный заказ поставлен в очередь выдачи.',
+                        $order,
+                        $request->user()->id,
+                        'paid_unassigned',
+                        'paid_unassigned',
+                    );
+                    ProvisionSubscription::dispatch($orderId);
+                });
         }
 
         return back()->with('status', 'Назначение панели обновлено.');
@@ -273,6 +356,15 @@ class AdminController extends Controller
             return back()->withErrors(['panel' => 'Сначала назначьте панель этому пользователю.']);
         }
 
+        app(PaymentEventLogger::class)->record(
+            $order->is_test ? 'internal_test' : $order->payment_method,
+            'provisioning_retry_requested',
+            'Администратор запросил повторную выдачу доступа.',
+            $order,
+            auth()->id(),
+            $order->status,
+            $order->status,
+        );
         ProvisionSubscription::dispatch($order->id);
 
         return back()->with('status', 'Выдача доступа поставлена в очередь.');

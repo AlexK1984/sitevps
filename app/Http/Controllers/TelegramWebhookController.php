@@ -10,6 +10,7 @@ use App\Models\Tariff;
 use App\Models\TelegramLinkToken;
 use App\Models\User;
 use App\Services\CheckoutService;
+use App\Services\PaymentEventLogger;
 use App\Services\TelegramBotClient;
 use App\Services\YooKassaClient;
 use Illuminate\Http\JsonResponse;
@@ -20,8 +21,12 @@ use RuntimeException;
 
 class TelegramWebhookController extends Controller
 {
-    public function __invoke(Request $request, TelegramBotClient $bot, CheckoutService $checkout): JsonResponse
-    {
+    public function __invoke(
+        Request $request,
+        TelegramBotClient $bot,
+        CheckoutService $checkout,
+        PaymentEventLogger $events,
+    ): JsonResponse {
         $secret = (string) config('services.telegram.webhook_secret');
         $providedSecret = (string) $request->header('X-Telegram-Bot-Api-Secret-Token');
 
@@ -34,7 +39,7 @@ class TelegramWebhookController extends Controller
             $queryId = data_get($preCheckoutQuery, 'id');
 
             if (is_string($queryId) && $queryId !== '') {
-                $accepted = $this->authorizeStarsPayment($preCheckoutQuery);
+                $accepted = $this->authorizeStarsPayment($preCheckoutQuery, $events);
                 $bot->answerPreCheckoutQuery(
                     $queryId,
                     $accepted,
@@ -61,7 +66,7 @@ class TelegramWebhookController extends Controller
         $successfulPayment = data_get($message, 'successful_payment');
 
         if (is_array($successfulPayment)) {
-            $matched = $this->completeStarsPayment($successfulPayment, $telegramUserId);
+            $matched = $this->completeStarsPayment($successfulPayment, $telegramUserId, $events);
             $bot->sendMessage($chatId, $matched
                 ? 'Платёж получен. Подписка появится после обработки заказа.'
                 : 'Telegram сообщил об оплате, но заказ не удалось сопоставить автоматически. Свяжитесь с поддержкой и не оплачивайте повторно.');
@@ -152,12 +157,28 @@ class TelegramWebhookController extends Controller
                         $order->reference,
                         $tariff->price_stars,
                     );
+                    $events->record(
+                        'telegram_stars',
+                        'payment_request_created',
+                        'Telegram Stars invoice создан.',
+                        $order,
+                        statusFrom: 'pending',
+                        statusTo: 'pending',
+                    );
                 } catch (RuntimeException $exception) {
                     if (isset($order)) {
                         $order->update([
                             'status' => 'payment_failed',
                             'error_message' => 'Не удалось создать счёт Telegram Stars.',
                         ]);
+                        $events->record(
+                            'telegram_stars',
+                            'payment_request_failed',
+                            'Не удалось создать Telegram Stars invoice.',
+                            $order,
+                            statusFrom: 'pending',
+                            statusTo: 'payment_failed',
+                        );
                     }
 
                     Log::warning('Telegram Stars invoice creation failed.', [
@@ -197,7 +218,7 @@ class TelegramWebhookController extends Controller
         return response()->json(['ok' => true]);
     }
 
-    private function authorizeStarsPayment(array $query): bool
+    private function authorizeStarsPayment(array $query, PaymentEventLogger $events): bool
     {
         $reference = data_get($query, 'invoice_payload');
         $telegramUserId = data_get($query, 'from.id');
@@ -211,20 +232,41 @@ class TelegramWebhookController extends Controller
             return false;
         }
 
-        return DB::transaction(function () use ($reference, $telegramUserId, $amount, $queryId): bool {
+        return DB::transaction(function () use ($reference, $telegramUserId, $amount, $queryId, $events): bool {
             $order = Order::query()->where('reference', $reference)->lockForUpdate()->first();
 
-            if (! $order
-                || $order->payment_method !== 'telegram_stars'
+            if (! $order) {
+                return false;
+            }
+
+            if ($order->payment_method !== 'telegram_stars'
                 || $order->payment_currency !== 'XTR'
                 || $order->payment_amount_units !== $amount
                 || (string) $order->user->telegram_user_id !== (string) $telegramUserId
                 || $order->status !== 'pending'
                 || $order->paid_at) {
+                $events->record(
+                    'telegram_stars',
+                    'webhook_rejected',
+                    'Telegram Stars pre-checkout не совпал с ожидаемыми параметрами заказа.',
+                    $order,
+                    statusFrom: $order->status,
+                    statusTo: $order->status,
+                );
+
                 return false;
             }
 
             if ($order->telegram_pre_checkout_id && $order->telegram_pre_checkout_id !== $queryId) {
+                $events->record(
+                    'telegram_stars',
+                    'webhook_rejected',
+                    'Повторный Telegram Stars pre-checkout не прошёл проверку заказа.',
+                    $order,
+                    statusFrom: $order->status,
+                    statusTo: $order->status,
+                );
+
                 return false;
             }
 
@@ -232,13 +274,24 @@ class TelegramWebhookController extends Controller
                 'telegram_pre_checkout_id' => $queryId,
                 'telegram_pre_checkout_at' => now(),
             ]);
+            $events->record(
+                'telegram_stars',
+                'webhook_verified',
+                'Telegram Stars pre-checkout проверен по заказу и разрешён.',
+                $order,
+                statusFrom: 'pending',
+                statusTo: 'pending',
+            );
 
             return true;
         });
     }
 
-    private function completeStarsPayment(array $payment, string $telegramUserId): bool
-    {
+    private function completeStarsPayment(
+        array $payment,
+        string $telegramUserId,
+        PaymentEventLogger $events,
+    ): bool {
         $reference = data_get($payment, 'invoice_payload');
         $chargeId = data_get($payment, 'telegram_payment_charge_id');
         $amount = data_get($payment, 'total_amount');
@@ -251,15 +304,27 @@ class TelegramWebhookController extends Controller
         }
 
         $paymentId = 'telegram-stars:'.$chargeId;
-        $result = DB::transaction(function () use ($reference, $telegramUserId, $amount, $paymentId): array {
+        $result = DB::transaction(function () use ($reference, $telegramUserId, $amount, $paymentId, $events): array {
             $order = Order::query()->where('reference', $reference)->lockForUpdate()->first();
 
-            if (! $order
-                || $order->payment_method !== 'telegram_stars'
+            if (! $order) {
+                return [false, false];
+            }
+
+            if ($order->payment_method !== 'telegram_stars'
                 || $order->payment_currency !== 'XTR'
                 || $order->payment_amount_units !== $amount
                 || (string) $order->user->telegram_user_id !== $telegramUserId
                 || ! $order->telegram_pre_checkout_id) {
+                $events->record(
+                    'telegram_stars',
+                    'webhook_rejected',
+                    'Telegram Stars successful payment не совпал с ожидаемыми параметрами заказа.',
+                    $order,
+                    statusFrom: $order->status,
+                    statusTo: $order->status,
+                );
+
                 return [false, false];
             }
 
@@ -272,15 +337,34 @@ class TelegramWebhookController extends Controller
             }
 
             if ($order->status !== 'pending' || Order::query()->where('payment_id', $paymentId)->exists()) {
+                $events->record(
+                    'telegram_stars',
+                    'webhook_rejected',
+                    'Telegram Stars successful payment уже обработан или заказ не ожидает оплаты.',
+                    $order,
+                    statusFrom: $order->status,
+                    statusTo: $order->status,
+                );
+
                 return [false, false];
             }
 
+            $oldStatus = $order->status;
             $order->update([
                 'payment_id' => $paymentId,
                 'paid_at' => now(),
                 'status' => 'paid_unassigned',
                 'error_message' => null,
             ]);
+            $events->record(
+                'telegram_stars',
+                'webhook_verified',
+                'Успешная оплата Telegram Stars проверена и привязана к заказу.',
+                $order,
+                statusFrom: $oldStatus,
+                statusTo: 'paid_unassigned',
+                idempotencyKey: 'telegram-stars-paid-order:'.$order->id,
+            );
 
             return [true, true];
         });

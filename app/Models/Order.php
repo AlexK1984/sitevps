@@ -20,6 +20,9 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
     'payment_amount_units',
     'telegram_pre_checkout_id',
     'telegram_pre_checkout_at',
+    'paid_at',
+    'is_test',
+    'test_idempotency_key',
     'error_message',
 ])]
 class Order extends Model
@@ -29,6 +32,7 @@ class Order extends Model
         return [
             'paid_at' => 'datetime',
             'telegram_pre_checkout_at' => 'datetime',
+            'is_test' => 'boolean',
         ];
     }
 
@@ -61,6 +65,10 @@ class Order extends Model
 
     public function paymentMethodLabel(): string
     {
+        if ($this->is_test) {
+            return 'TEST · внутренняя симуляция';
+        }
+
         return match ($this->payment_method) {
             'telegram_stars' => 'Telegram Stars',
             default => 'ЮKassa',
@@ -69,6 +77,10 @@ class Order extends Model
 
     public function paidAmountLabel(): string
     {
+        if ($this->is_test) {
+            return 'TEST · без списания';
+        }
+
         if ($this->payment_currency === 'XTR') {
             return number_format($this->payment_amount_units ?? 0).' ⭐';
         }

@@ -482,6 +482,10 @@ a{
   background:#fde8e6;
   color:#a83228
 }
+.status-test{
+  background:#fff0c2;
+  color:#735300
+}
 .panel-connection-status{
   margin:12px 0;
   color:var(--muted);

@@ -10,7 +10,10 @@ use Illuminate\Support\Str;
 
 class CheckoutService
 {
-    public function __construct(private readonly YooKassaClient $yooKassa) {}
+    public function __construct(
+        private readonly YooKassaClient $yooKassa,
+        private readonly PaymentEventLogger $events,
+    ) {}
 
     public function create(User $user, Tariff $tariff, string $returnUrl): Order
     {
@@ -25,6 +28,13 @@ class CheckoutService
             'payment_amount_units' => $tariff->price_kopecks,
             'status' => 'pending',
         ]);
+        $this->events->record(
+            'yookassa',
+            'order_created',
+            'Создан заказ для оплаты через ЮKassa.',
+            $order,
+            statusTo: 'pending',
+        );
 
         try {
             $payment = $this->yooKassa->createPayment($order->load('tariff'), $returnUrl);
@@ -33,6 +43,14 @@ class CheckoutService
                 'status' => 'payment_failed',
                 'error_message' => $exception->getMessage(),
             ]);
+            $this->events->record(
+                'yookassa',
+                'payment_request_failed',
+                'ЮKassa не смогла создать платёж.',
+                $order,
+                statusFrom: 'pending',
+                statusTo: 'payment_failed',
+            );
 
             throw $exception;
         }
@@ -41,6 +59,14 @@ class CheckoutService
             'payment_id' => $payment['id'],
             'payment_url' => $payment['url'],
         ]);
+        $this->events->record(
+            'yookassa',
+            'payment_request_created',
+            'ЮKassa создала платёж; клиент перенаправлен к провайдеру.',
+            $order,
+            statusFrom: 'pending',
+            statusTo: 'pending',
+        );
 
         return $order->fresh();
     }
@@ -51,7 +77,7 @@ class CheckoutService
             throw new PaymentGatewayException('Для тарифа не задана цена в Telegram Stars.');
         }
 
-        return Order::create([
+        $order = Order::create([
             'reference' => (string) Str::uuid(),
             'user_id' => $user->id,
             'tariff_id' => $tariff->id,
@@ -62,5 +88,14 @@ class CheckoutService
             'payment_amount_units' => $tariff->price_stars,
             'status' => 'pending',
         ]);
+        $this->events->record(
+            'telegram_stars',
+            'order_created',
+            'Создан заказ для оплаты через Telegram Stars.',
+            $order,
+            statusTo: 'pending',
+        );
+
+        return $order;
     }
 }

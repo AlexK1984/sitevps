@@ -9,6 +9,7 @@ use App\Models\Subscription;
 use App\Models\SubscriptionOrderApplication;
 use App\Models\Tariff;
 use App\Models\User;
+use App\Services\PaymentEventLogger;
 use App\Services\ThreeXUiClient;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -27,9 +28,9 @@ class ProvisionSubscription implements ShouldQueue
 
     public function __construct(public readonly int $orderId) {}
 
-    public function handle(ThreeXUiClient $client): void
+    public function handle(ThreeXUiClient $client, PaymentEventLogger $events): void
     {
-        $provisioning = DB::transaction(function (): ?array {
+        $provisioning = DB::transaction(function () use ($events): ?array {
             $order = Order::query()->lockForUpdate()->findOrFail($this->orderId);
 
             if (! in_array($order->status, ['paid_unassigned', 'provisioning_failed'], true)) {
@@ -40,11 +41,21 @@ class ProvisionSubscription implements ShouldQueue
             $panelId = $user->assigned_panel_id;
 
             if (! $panelId) {
+                $oldStatus = $order->status;
                 $order->update(['status' => 'paid_unassigned', 'error_message' => null]);
+                $events->record(
+                    $order->is_test ? 'internal_test' : $order->payment_method,
+                    'provisioning_waiting_for_panel',
+                    'Оплата подтверждена; доступ ожидает назначения панели пользователю.',
+                    $order,
+                    statusFrom: $oldStatus,
+                    statusTo: 'paid_unassigned',
+                );
 
                 return null;
             }
 
+            $oldOrderStatus = $order->status;
             $subscription = Subscription::query()->where('user_id', $user->id)->lockForUpdate()->first();
 
             if ($subscription?->status === 'provisioning') {
@@ -96,6 +107,14 @@ class ProvisionSubscription implements ShouldQueue
                 'status' => 'provisioning',
                 'error_message' => null,
             ]);
+            $events->record(
+                $order->is_test ? 'internal_test' : $order->payment_method,
+                'provisioning_started',
+                'Обычная выдача доступа поставлена в обработку.',
+                $order,
+                statusFrom: $oldOrderStatus,
+                statusTo: 'provisioning',
+            );
 
             return ['order_id' => $order->id, 'subscription_id' => $subscription->id, 'panel_id' => $panelId];
         });
@@ -111,7 +130,8 @@ class ProvisionSubscription implements ShouldQueue
                 $subscription,
             );
         } catch (PanelApiException $exception) {
-            DB::transaction(function () use ($provisioning, $exception): void {
+            DB::transaction(function () use ($provisioning, $exception, $events): void {
+                $order = Order::query()->findOrFail($provisioning['order_id']);
                 Order::query()->whereKey($provisioning['order_id'])->update([
                     'status' => 'provisioning_failed',
                     'error_message' => $exception->getMessage(),
@@ -120,13 +140,22 @@ class ProvisionSubscription implements ShouldQueue
                     'status' => 'provisioning_failed',
                     'last_error' => $exception->getMessage(),
                 ]);
+                $events->record(
+                    $order->is_test ? 'internal_test' : $order->payment_method,
+                    'provisioning_failed',
+                    'Панель не приняла запрос на выдачу; администратор может повторить обработку.',
+                    $order,
+                    statusFrom: 'provisioning',
+                    statusTo: 'provisioning_failed',
+                );
             });
 
             return;
         }
 
         $userId = Order::query()->findOrFail($provisioning['order_id'])->user_id;
-        DB::transaction(function () use ($provisioning, $userId): void {
+        DB::transaction(function () use ($provisioning, $userId, $events): void {
+            $order = Order::query()->findOrFail($provisioning['order_id']);
             Order::query()->whereKey($provisioning['order_id'])->update(['status' => 'active']);
             Order::query()
                 ->where('user_id', $userId)
@@ -136,6 +165,14 @@ class ProvisionSubscription implements ShouldQueue
                 'status' => 'active',
                 'last_error' => null,
             ]);
+            $events->record(
+                $order->is_test ? 'internal_test' : $order->payment_method,
+                'provisioning_completed',
+                'Доступ успешно выдан или продлён на назначенной панели.',
+                $order,
+                statusFrom: 'provisioning',
+                statusTo: 'active',
+            );
         });
 
         Order::query()->where('user_id', $userId)
@@ -153,10 +190,19 @@ class ProvisionSubscription implements ShouldQueue
             return;
         }
 
+        $oldStatus = $order->status;
         $order->update([
             'status' => 'provisioning_failed',
             'error_message' => 'Не удалось выдать доступ. Проверьте соединение и повторите операцию.',
         ]);
+        app(PaymentEventLogger::class)->record(
+            $order->is_test ? 'internal_test' : $order->payment_method,
+            'provisioning_failed',
+            'Очередь завершила выдачу ошибкой; администратор может повторить обработку.',
+            $order,
+            statusFrom: $oldStatus,
+            statusTo: 'provisioning_failed',
+        );
 
         Subscription::query()
             ->where('user_id', $order->user_id)

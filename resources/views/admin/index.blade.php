@@ -20,6 +20,9 @@
             <input type="hidden" name="telegram_stars_enabled" value="0">
             <label class="checkbox"><input type="checkbox" name="telegram_stars_enabled" value="1" @checked($paymentSettings->telegram_stars_enabled)> Разрешить Telegram Stars в боте</label>
             <p class="muted">Токен бота задаётся выше или в .env; секрет webhook остаётся в .env. Для каждого тарифа укажите цену в Stars ниже.</p>
+            <input type="hidden" name="internal_test_payments_enabled" value="0">
+            <label class="checkbox"><input type="checkbox" name="internal_test_payments_enabled" value="1" @checked($paymentSettings->internal_test_payments_enabled)> Разрешить внутреннюю тестовую оплату</label>
+            <p class="notice">ВНИМАНИЕ: тестовая симуляция не обращается к ЮKassa или Telegram и не списывает деньги, но создаёт оплаченный заказ и выдаёт/продлевает реальный доступ на назначенной панели. Тестовые заказы будут помечены «TEST».</p>
             <button class="button button-full" type="submit">Сохранить способы оплаты</button>
         </form>
         <form class="panel-card admin-form" method="post" action="{{ route('admin.payment-credentials.update') }}" autocomplete="off">
@@ -58,6 +61,7 @@
             @csrf @method('PUT')
             <input type="hidden" name="yookassa_enabled" value="{{ $paymentSettings->yookassa_enabled ? '1' : '0' }}">
             <input type="hidden" name="telegram_stars_enabled" value="{{ $paymentSettings->telegram_stars_enabled ? '1' : '0' }}">
+            <input type="hidden" name="internal_test_payments_enabled" value="{{ $paymentSettings->internal_test_payments_enabled ? '1' : '0' }}">
             <h3>Подготовка криптооплаты</h3>
             <p class="notice">Криптооплата отключена: провайдер и API ещё не выбраны. Эти общие параметры сохраняются для последующей интеграции и не создают платёжные адреса или подтверждения.</p>
             <label>Актив / валюта<input name="crypto_asset" value="{{ $paymentSettings->crypto_asset }}" placeholder="Например, USDT" maxlength="20"></label>
@@ -71,6 +75,37 @@
         </form>
     </div>
 </section>
+
+@if($paymentSettings->internal_test_payments_enabled)
+<section class="admin-section">
+    <div class="section-heading"><div><span class="eyebrow">ВНУТРЕННЯЯ СИМУЛЯЦИЯ</span><h2>Тестовая оплата</h2></div></div>
+    <p class="notice">Только для администраторов. Доступ будет реально выдан или продлён через обычную очередь на назначенной панели. Платёжный провайдер не вызывается, списания нет. Заказ будет помечен «TEST». Проверьте, что выбраны правильные пользователь и тариф.</p>
+    <form class="panel-card admin-form" method="post" action="{{ route('admin.payments.test') }}">
+        @csrf
+        <input type="hidden" name="idempotency_key" value="{{ $testPaymentIdempotencyKey }}">
+        <label>Пользователь с назначенной панелью
+            <select name="user_id" required>
+                <option value="">Выберите пользователя</option>
+                @foreach($testPaymentUsers as $testUser)
+                    <option value="{{ $testUser->id }}">{{ $testUser->email }}</option>
+                @endforeach
+            </select>
+        </label>
+        <label>Активный тариф
+            <select name="tariff_id" required>
+                <option value="">Выберите тариф</option>
+                @foreach($testPaymentTariffs as $testTariff)
+                    <option value="{{ $testTariff->id }}">{{ $testTariff->name }}</option>
+                @endforeach
+            </select>
+        </label>
+        @if($testPaymentUsers->isEmpty() || $testPaymentTariffs->isEmpty())
+            <p class="muted">Для теста нужен пользователь с назначенной панелью и хотя бы один активный тариф.</p>
+        @endif
+        <button class="button button-full" type="submit" @disabled($testPaymentUsers->isEmpty() || $testPaymentTariffs->isEmpty())>Создать заказ TEST и выдать реальный доступ</button>
+    </form>
+</section>
+@endif
 
 <section class="admin-section">
     <div class="section-heading"><div><span class="eyebrow">КАТАЛОГ</span><h2>Тарифы</h2></div></div>
@@ -166,12 +201,43 @@
     <div class="section-heading"><div><span class="eyebrow">ПЛАТЕЖИ И ЗАКАЗЫ</span><h2>Последние 100 заказов</h2></div></div>
     <div class="table-wrap"><table><thead><tr><th>Дата</th><th>Пользователь</th><th>Тариф</th><th>Сумма</th><th>Панель</th><th>Статус</th><th></th></tr></thead><tbody>
         @forelse($orders as $order)
-            <tr><td>{{ $order->created_at->format('d.m.Y H:i') }}</td><td>{{ $order->user->email }}</td><td>{{ $order->tariff->name }}</td><td>{{ $order->paidAmountLabel() }}<br><small>{{ $order->paymentMethodLabel() }}</small></td><td>{{ $order->panel?->name ?? '—' }}</td><td title="{{ $order->error_message }}">{{ $order->statusLabel() }}</td><td>
+            <tr><td>{{ $order->created_at->format('d.m.Y H:i') }}</td><td>{{ $order->user->email }}</td><td>{{ $order->tariff->name }}</td><td>@if($order->is_test)<span class="status-pill status-test">TEST</span><br>@endif{{ $order->paidAmountLabel() }}<br><small>{{ $order->paymentMethodLabel() }}</small></td><td>{{ $order->panel?->name ?? '—' }}</td><td title="{{ $order->error_message }}">{{ $order->statusLabel() }}</td><td>
                 @if(in_array($order->status, ['paid_unassigned','provisioning_failed'], true))
                     <form method="post" action="{{ route('admin.orders.retry', $order) }}">@csrf<button class="button button-small button-outline" type="submit">Повторить выдачу</button></form>
                 @endif
             </td></tr>
         @empty<tr><td colspan="7" class="empty-cell">Заказов пока нет.</td>@endforelse
     </tbody></table></div>
+</section>
+
+<section class="admin-section">
+    <div class="section-heading">
+        <div><span class="eyebrow">АУДИТ</span><h2>Журнал платёжных событий</h2></div>
+        <form method="get" action="{{ route('admin.index') }}">
+            <label>Метод
+                <select name="event_provider" onchange="this.form.submit()">
+                    <option value="">Все методы</option>
+                    <option value="yookassa" @selected($eventProvider === 'yookassa')>ЮKassa</option>
+                    <option value="telegram_stars" @selected($eventProvider === 'telegram_stars')>Telegram Stars</option>
+                    <option value="internal_test" @selected($eventProvider === 'internal_test')>Внутренний тест</option>
+                </select>
+            </label>
+        </form>
+    </div>
+    <div class="table-wrap"><table><thead><tr><th>Время</th><th>Заказ</th><th>Пользователь</th><th>Метод</th><th>Событие</th><th>Статус</th><th>Описание</th><th>Администратор</th></tr></thead><tbody>
+        @forelse($paymentEvents as $event)
+            <tr>
+                <td>{{ $event->created_at->format('d.m.Y H:i:s') }}</td>
+                <td>{{ $event->order?->reference ? \Illuminate\Support\Str::limit($event->order->reference, 12) : '—' }} @if($event->order?->is_test)<span class="status-pill status-test">TEST</span>@endif</td>
+                <td>{{ $event->order?->user?->email ?? '—' }}</td>
+                <td>{{ $event->providerLabel() }}</td>
+                <td>{{ $event->eventTypeLabel() }}</td>
+                <td>{{ $event->status_from ?? '—' }} → {{ $event->status_to ?? '—' }}</td>
+                <td>{{ $event->summary }}</td>
+                <td>{{ $event->actor?->email ?? '—' }}</td>
+            </tr>
+        @empty<tr><td colspan="8" class="empty-cell">Событий пока нет.</td>@endforelse
+    </tbody></table></div>
+    <div class="pagination">{{ $paymentEvents->links() }}</div>
 </section>
 @endsection

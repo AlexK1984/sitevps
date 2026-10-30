@@ -12,6 +12,7 @@ use App\Models\Tariff;
 use App\Models\TelegramLinkToken;
 use App\Models\User;
 use App\Services\CheckoutService;
+use App\Services\InternalTestPaymentService;
 use App\Services\TelegramBotClient;
 use App\Services\ThreeXUiClient;
 use App\Services\YooKassaClient;
@@ -109,6 +110,129 @@ class SubscriptionFlowTest extends TestCase
             'crypto_payment_ttl_minutes' => 30,
             'crypto_admin_notes' => 'Choose provider before launch.',
         ]);
+        $this->assertDatabaseHas('payment_settings', [
+            'id' => 1,
+            'internal_test_payments_enabled' => false,
+        ]);
+    }
+
+    public function test_internal_test_payments_are_disabled_by_default_and_admin_only(): void
+    {
+        $this->assertFalse(PaymentSettings::current()->internal_test_payments_enabled);
+        $tariff = $this->createTariff();
+        $panel = $this->createPanel('Panel');
+        $user = User::factory()->create(['assigned_panel_id' => $panel->id]);
+        $admin = User::factory()->create(['is_admin' => true]);
+        $customer = User::factory()->create();
+
+        $this->actingAs($admin)->get('/admin')
+            ->assertOk()
+            ->assertSee('внутреннюю тестовую оплату')
+            ->assertDontSee('Создать заказ TEST и выдать реальный доступ');
+
+        $payload = [
+            'user_id' => $user->id,
+            'tariff_id' => $tariff->id,
+            'idempotency_key' => (string) Str::uuid(),
+        ];
+
+        $this->actingAs($customer)->post('/admin/payments/test', $payload)->assertForbidden();
+        $this->actingAs($admin)->post('/admin/payments/test', $payload)->assertNotFound();
+        $this->assertDatabaseCount('orders', 0);
+        $this->assertDatabaseCount('payment_events', 0);
+    }
+
+    public function test_admin_internal_test_payment_is_clearly_marked_idempotent_and_never_calls_a_provider(): void
+    {
+        Queue::fake();
+        Http::fake();
+        $admin = User::factory()->create(['is_admin' => true]);
+        $panel = $this->createPanel('Panel');
+        $user = User::factory()->create(['assigned_panel_id' => $panel->id]);
+        $tariff = $this->createTariff();
+        $key = (string) Str::uuid();
+
+        $this->actingAs($admin)->put('/admin/payment-settings', [
+            'yookassa_enabled' => '1',
+            'telegram_stars_enabled' => '0',
+            'internal_test_payments_enabled' => '1',
+        ])->assertRedirect();
+
+        $this->actingAs($admin)->get('/admin')
+            ->assertOk()
+            ->assertSee('тестовая симуляция не обращается к ЮKassa или Telegram', false)
+            ->assertSee('Создать заказ TEST и выдать реальный доступ');
+
+        $payload = [
+            'user_id' => $user->id,
+            'tariff_id' => $tariff->id,
+            'idempotency_key' => $key,
+        ];
+
+        $this->actingAs($user)->post('/admin/payments/test', $payload)->assertForbidden();
+        $this->assertDatabaseCount('orders', 0);
+
+        $this->actingAs($admin)->post('/admin/payments/test', $payload)
+            ->assertRedirect()
+            ->assertSessionHas('status', 'Тестовый заказ создан и передан в обычную очередь выдачи на реальную панель.');
+        $this->actingAs($admin)->post('/admin/payments/test', $payload)
+            ->assertRedirect()
+            ->assertSessionHas('status', 'Этот тестовый запрос уже был обработан; повторная выдача не запускалась.');
+
+        $order = Order::query()->where('test_idempotency_key', $key)->firstOrFail();
+        $this->assertTrue($order->is_test);
+        $this->assertSame('internal_test', $order->payment_method);
+        $this->assertSame('TST', $order->payment_currency);
+        $this->assertSame('paid_unassigned', $order->status);
+        $this->assertNotNull($order->paid_at);
+        $this->assertNull($order->payment_id);
+        $this->assertNull($order->payment_url);
+        $this->assertSame('TEST · без списания', $order->paidAmountLabel());
+        $this->assertSame('TEST · внутренняя симуляция', $order->paymentMethodLabel());
+        $this->assertDatabaseCount('orders', 1);
+        $this->assertDatabaseCount('payment_events', 2);
+        $this->assertDatabaseHas('payment_events', [
+            'order_id' => $order->id,
+            'actor_id' => $admin->id,
+            'provider' => 'internal_test',
+            'event_type' => 'test_simulated',
+            'status_to' => 'paid_unassigned',
+        ]);
+        Queue::assertPushed(ProvisionSubscription::class, 1);
+        Http::assertNothingSent();
+
+        $this->get('/admin')
+            ->assertOk()
+            ->assertSee('TEST')
+            ->assertSee('Тестовая оплата смоделирована')
+            ->assertDontSee('test-simulation:'.$key);
+    }
+
+    public function test_internal_test_payment_uses_the_normal_idempotent_provisioning_path(): void
+    {
+        Http::fake();
+        PaymentSettings::current()->update(['internal_test_payments_enabled' => true]);
+        $admin = User::factory()->create(['is_admin' => true]);
+        $panel = $this->createPanel('Panel');
+        $user = User::factory()->create(['assigned_panel_id' => $panel->id]);
+        $order = app(InternalTestPaymentService::class)
+            ->simulate($user, $this->createTariff(), $admin, (string) Str::uuid())[0];
+
+        $client = Mockery::mock(ThreeXUiClient::class);
+        $client->shouldReceive('provision')->once();
+        $this->app->instance(ThreeXUiClient::class, $client);
+
+        ProvisionSubscription::dispatchSync($order->id);
+
+        $this->assertDatabaseHas('orders', ['id' => $order->id, 'status' => 'active', 'is_test' => true]);
+        $this->assertDatabaseHas('payment_events', [
+            'order_id' => $order->id,
+            'event_type' => 'provisioning_completed',
+            'provider' => 'internal_test',
+            'status_to' => 'active',
+        ]);
+        $this->assertDatabaseCount('subscriptions', 1);
+        Http::assertNothingSent();
     }
 
     public function test_admin_credentials_are_encrypted_and_never_returned_to_the_browser(): void
@@ -472,6 +596,11 @@ class SubscriptionFlowTest extends TestCase
             'payment_id' => 'payment-created',
             'status' => 'pending',
         ]);
+        $this->assertDatabaseHas('payment_events', [
+            'provider' => 'yookassa',
+            'event_type' => 'payment_request_created',
+            'status_to' => 'pending',
+        ]);
 
         Http::assertSent(fn (ClientRequest $request) => $request->url() === 'https://api.yookassa.ru/v3/payments'
             && $request->hasHeader('Idempotence-Key')
@@ -504,6 +633,11 @@ class SubscriptionFlowTest extends TestCase
             ->assertUnprocessable();
 
         $this->assertDatabaseHas('orders', ['id' => $order->id, 'status' => 'pending', 'paid_at' => null]);
+        $this->assertDatabaseHas('payment_events', [
+            'order_id' => $order->id,
+            'provider' => 'yookassa',
+            'event_type' => 'webhook_rejected',
+        ]);
     }
 
     public function test_yookassa_webhook_marks_verified_payment_and_is_idempotent(): void
@@ -537,6 +671,12 @@ class SubscriptionFlowTest extends TestCase
             'paid_at' => $paidAt,
         ]);
         $this->assertDatabaseCount('subscriptions', 0);
+        $this->assertDatabaseHas('payment_events', [
+            'order_id' => $order->id,
+            'provider' => 'yookassa',
+            'event_type' => 'webhook_verified',
+            'status_to' => 'paid_unassigned',
+        ]);
     }
 
     public function test_failed_provisioning_retry_does_not_extend_subscription_twice(): void
@@ -579,6 +719,16 @@ class SubscriptionFlowTest extends TestCase
             'status' => 'active',
             'expires_at' => $originalExpiry->toDateTimeString(),
             'traffic_limit_bytes' => $originalTraffic,
+        ]);
+        $this->assertDatabaseHas('payment_events', [
+            'order_id' => $order->id,
+            'event_type' => 'provisioning_failed',
+            'provider' => 'yookassa',
+        ]);
+        $this->assertDatabaseHas('payment_events', [
+            'order_id' => $order->id,
+            'event_type' => 'provisioning_completed',
+            'provider' => 'yookassa',
         ]);
         $this->actingAs($user)->get('/dashboard')
             ->assertOk()
@@ -750,6 +900,12 @@ class SubscriptionFlowTest extends TestCase
             'paid_at' => $paidAt,
         ]);
         $this->assertDatabaseCount('subscriptions', 0);
+        $this->assertDatabaseHas('payment_events', [
+            'order_id' => $order->id,
+            'provider' => 'telegram_stars',
+            'event_type' => 'webhook_verified',
+            'status_to' => 'paid_unassigned',
+        ]);
     }
 
     public function test_telegram_stars_rejects_mismatched_pre_checkout_without_authorizing_order(): void

@@ -9,6 +9,7 @@ use Illuminate\Database\Eloquent\Model;
 #[Fillable([
     'yookassa_enabled',
     'telegram_stars_enabled',
+    'internal_test_payments_enabled',
     'crypto_asset',
     'crypto_network',
     'crypto_confirmations',
@@ -26,6 +27,7 @@ class PaymentSettings extends Model
         return [
             'yookassa_enabled' => 'boolean',
             'telegram_stars_enabled' => 'boolean',
+            'internal_test_payments_enabled' => 'boolean',
             'yookassa_shop_id' => 'encrypted',
             'yookassa_secret_key' => 'encrypted',
             'telegram_bot_token' => 'encrypted',
@@ -37,6 +39,7 @@ class PaymentSettings extends Model
         return self::query()->firstOrCreate(['id' => 1], [
             'yookassa_enabled' => true,
             'telegram_stars_enabled' => false,
+            'internal_test_payments_enabled' => false,
         ]);
     }
 
