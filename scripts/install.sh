@@ -6,6 +6,7 @@ readonly APP_DIR="/var/www/vpnsite"
 readonly DATA_DIR="/var/lib/vpnsite"
 readonly NGINX_SITE="/etc/nginx/sites-available/vpnsite"
 readonly NGINX_ENABLED="/etc/nginx/sites-enabled/vpnsite"
+readonly PHP_FPM_POOL="/etc/php/8.3/fpm/pool.d/www.conf"
 readonly WORKER_SERVICE="/etc/systemd/system/vpnsite-worker.service"
 readonly OWNER_MARKER="vpnsite-installer-v1"
 
@@ -44,6 +45,64 @@ path_exists() {
 directory_is_empty() {
     [[ -d "$1" && ! -L "$1" ]] || return 1
     [[ -z "$(find "$1" -mindepth 1 -maxdepth 1 -print -quit)" ]]
+}
+
+configure_php_fpm_pool() {
+    local setting
+    local current_value
+    local setting_count
+
+    if [[ ! -f "$PHP_FPM_POOL" || -L "$PHP_FPM_POOL" ]]; then
+        fail "The expected PHP-FPM pool file is missing or is not a regular file: $PHP_FPM_POOL."
+    fi
+
+    setting_count="$(grep -Ec '^[[:space:]]*user[[:space:]]*=' "$PHP_FPM_POOL")"
+    if [[ "$setting_count" -ne 1 ]]; then
+        fail "Expected exactly one active user setting in $PHP_FPM_POOL; refusing to alter a custom pool."
+    fi
+    current_value="$(sed -nE 's/^[[:space:]]*user[[:space:]]*=[[:space:]]*([^[:space:]]+)[[:space:]]*$/\1/p' "$PHP_FPM_POOL")"
+    if [[ "$current_value" != "www-data" && "$current_value" != "$APP_USER" ]]; then
+        fail "The PHP-FPM pool uses unexpected user '$current_value'; refusing to change it."
+    fi
+
+    setting_count="$(grep -Ec '^[[:space:]]*group[[:space:]]*=' "$PHP_FPM_POOL")"
+    if [[ "$setting_count" -ne 1 ]] ||
+        ! grep -Eq '^[[:space:]]*group[[:space:]]*=[[:space:]]*www-data[[:space:]]*$' "$PHP_FPM_POOL"; then
+        fail "The PHP-FPM pool must use the www-data group for Nginx socket access."
+    fi
+
+    setting_count="$(grep -Ec '^[[:space:]]*listen[[:space:]]*=' "$PHP_FPM_POOL")"
+    if [[ "$setting_count" -ne 1 ]] ||
+        ! grep -Eq '^[[:space:]]*listen[[:space:]]*=[[:space:]]*/run/php/php8\.3-fpm\.sock[[:space:]]*$' "$PHP_FPM_POOL"; then
+        fail "The PHP-FPM pool must use the expected Nginx socket; refusing to alter a custom pool."
+    fi
+
+    for setting in listen.owner listen.group listen.mode; do
+        case "$setting" in
+            listen.owner|listen.group) current_value="www-data" ;;
+            listen.mode) current_value="0660" ;;
+        esac
+        setting_count="$(grep -Ec "^[[:space:]]*${setting//./\\.}[[:space:]]*=" "$PHP_FPM_POOL" || true)"
+        if [[ "$setting_count" -gt 1 ]]; then
+            fail "The PHP-FPM pool has duplicate $setting settings; refusing to alter it."
+        elif [[ "$setting_count" -eq 1 ]]; then
+            if ! grep -Eq "^[[:space:]]*${setting//./\\.}[[:space:]]*=[[:space:]]*${current_value}[[:space:]]*$" "$PHP_FPM_POOL"; then
+                fail "The PHP-FPM pool has an unexpected $setting value; refusing to alter it."
+            fi
+        fi
+    done
+
+    sed -i -E "s/^[[:space:]]*user[[:space:]]*=.*/user = $APP_USER/" "$PHP_FPM_POOL"
+    for setting in listen.owner listen.group listen.mode; do
+        setting_count="$(grep -Ec "^[[:space:]]*${setting//./\\.}[[:space:]]*=" "$PHP_FPM_POOL" || true)"
+        if [[ "$setting_count" -eq 0 ]]; then
+            case "$setting" in
+                listen.owner|listen.group) current_value="www-data" ;;
+                listen.mode) current_value="0660" ;;
+            esac
+            printf '%s = %s\n' "$setting" "$current_value" >>"$PHP_FPM_POOL"
+        fi
+    done
 }
 
 normalize_public_ip() {
@@ -361,6 +420,10 @@ fi
 if ! id "$APP_USER" >/dev/null 2>&1; then
     useradd --system --gid www-data --home-dir "$APP_DIR" --no-create-home --shell /usr/sbin/nologin "$APP_USER"
 fi
+
+configure_php_fpm_pool
+php-fpm8.3 -t
+
 chown root:www-data "$DATA_DIR"
 chmod 3770 "$DATA_DIR"
 
@@ -513,6 +576,7 @@ fi
 
 nginx -t
 systemctl enable --now php8.3-fpm nginx
+systemctl restart php8.3-fpm
 systemctl reload nginx
 
 certbot --nginx --non-interactive --agree-tos --redirect \

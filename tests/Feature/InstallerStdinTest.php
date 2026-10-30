@@ -214,4 +214,26 @@ class InstallerStdinTest extends TestCase
         $this->assertStringContainsString('[[ "$conflicting_config" == "$NGINX_ENABLED" ]] && continue', $installer);
         $this->assertStringContainsString('if [[ ! -L "$NGINX_ENABLED" ]]; then', $installer);
     }
+
+    public function test_php_fpm_uses_the_same_user_as_the_sqlite_worker_and_keeps_nginx_socket_access(): void
+    {
+        $installer = file_get_contents(base_path('scripts/install.sh'));
+
+        $this->assertIsString($installer);
+        $this->assertStringContainsString('readonly PHP_FPM_POOL="/etc/php/8.3/fpm/pool.d/www.conf"', $installer);
+        $this->assertStringContainsString('sed -i -E "s/^[[:space:]]*user[[:space:]]*=.*/user = $APP_USER/" "$PHP_FPM_POOL"', $installer);
+        $this->assertStringContainsString('group[[:space:]]*=[[:space:]]*www-data', $installer);
+        $this->assertStringContainsString('listen.owner|listen.group) current_value="www-data"', $installer);
+        $this->assertStringContainsString('listen.mode) current_value="0660"', $installer);
+        $this->assertStringContainsString('php-fpm8.3 -t', $installer);
+        $this->assertStringContainsString('systemctl restart php8.3-fpm', $installer);
+        $this->assertStringContainsString('chmod 3770 "$DATA_DIR"', $installer);
+        $this->assertStringContainsString('chown "$APP_USER":www-data "$DATA_DIR/database.sqlite"', $installer);
+
+        $createAppUser = strpos($installer, 'useradd --system --gid www-data --home-dir "$APP_DIR"');
+        $configurePool = strpos($installer, 'configure_php_fpm_pool'."\nphp-fpm8.3 -t");
+        $this->assertNotFalse($createAppUser);
+        $this->assertNotFalse($configurePool);
+        $this->assertLessThan($configurePool, $createAppUser);
+    }
 }
