@@ -65,4 +65,64 @@ class InstallerStdinTest extends TestCase
         $this->assertStringContainsString('refusing to replace or merge them', $bootstrap);
         $this->assertStringNotContainsString('reset --hard', $bootstrap);
     }
+
+    public function test_ipv4_mapped_ipv6_dns_address_matches_its_ipv4_address(): void
+    {
+        $installer = file_get_contents(base_path('scripts/install.sh'));
+        $normalizer = base_path('scripts/normalize-public-ip.py');
+        $python = PHP_OS_FAMILY === 'Windows' ? 'python' : 'python3';
+
+        $this->assertIsString($installer);
+        $normalizerSource = file_get_contents($normalizer);
+        $this->assertIsString($normalizerSource);
+        $this->assertStringContainsString('address.ipv4_mapped', $normalizerSource);
+        $this->assertStringContainsString(
+            'normalized_dns_address="$(normalize_public_ip "$dns_address")"',
+            $installer,
+        );
+
+        $probe = proc_open(
+            [$python, '--version'],
+            [
+                0 => ['pipe', 'r'],
+                1 => ['pipe', 'w'],
+                2 => ['pipe', 'w'],
+            ],
+            $probePipes,
+        );
+        if (! is_resource($probe)) {
+            $this->markTestSkipped('Python 3 is required to exercise the installer IP normalizer.');
+        }
+        fclose($probePipes[0]);
+        fclose($probePipes[1]);
+        fclose($probePipes[2]);
+        if (proc_close($probe) !== 0) {
+            $this->markTestSkipped('Python 3 is required to exercise the installer IP normalizer.');
+        }
+
+        foreach ([
+            '::ffff:157.228.138.15' => '157.228.138.15',
+            '157.228.138.15' => '157.228.138.15',
+        ] as $input => $expected) {
+            $process = proc_open(
+                [$python, $normalizer, $input],
+                [
+                    0 => ['pipe', 'r'],
+                    1 => ['pipe', 'w'],
+                    2 => ['pipe', 'w'],
+                ],
+                $pipes,
+            );
+
+            $this->assertIsResource($process, 'The IP normalizer process must start.');
+            fclose($pipes[0]);
+            $output = trim(stream_get_contents($pipes[1]));
+            $error = stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+
+            $this->assertSame(0, proc_close($process), $error);
+            $this->assertSame($expected, $output);
+        }
+    }
 }

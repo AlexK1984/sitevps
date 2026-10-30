@@ -47,18 +47,7 @@ directory_is_empty() {
 }
 
 normalize_public_ip() {
-    python3 -c '
-import ipaddress
-import sys
-
-try:
-    address = ipaddress.ip_address(sys.argv[1].strip())
-except ValueError:
-    raise SystemExit(1)
-if not address.is_global:
-    raise SystemExit(1)
-print(address)
-' "$1"
+    python3 "$(dirname -- "${BASH_SOURCE[0]}")/normalize-public-ip.py" "$1"
 }
 
 detect_public_ip() {
@@ -293,6 +282,12 @@ try:
     addresses = [ipaddress.ip_address(part.strip()) for part in sys.argv[1].split(",")]
 except ValueError:
     raise SystemExit(1)
+addresses = [
+    address.ipv4_mapped
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None
+    else address
+    for address in addresses
+]
 if not addresses or any(not address.is_global for address in addresses):
     raise SystemExit(1)
 print(",".join(dict.fromkeys(str(address) for address in addresses)))
@@ -302,15 +297,18 @@ print(",".join(dict.fromkeys(str(address) for address in addresses)))
 fi
 
 for dns_address in "${DNS_ADDRESSES[@]}"; do
+    normalized_dns_address="$(normalize_public_ip "$dns_address")" ||
+        fail "The domain resolved to a non-public or invalid IP address: $dns_address."
     dns_matches_vps=0
     for public_ip in "${PUBLIC_IPS[@]}"; do
-        if [[ "$dns_address" == "$public_ip" ]]; then
+        if [[ "$normalized_dns_address" == "$public_ip" ]]; then
             dns_matches_vps=1
             break
         fi
     done
     if [[ "$dns_matches_vps" -ne 1 ]]; then
-        printf 'Resolved A/AAAA address %s does not match a detected or manually confirmed VPS public IP.\n' "$dns_address" >&2
+        printf 'Resolved A/AAAA address %s (normalized: %s) does not match a detected or manually confirmed VPS public IP.\n' \
+            "$dns_address" "$normalized_dns_address" >&2
         fail "Correct every A/AAAA record for $DOMAIN to this VPS and wait for DNS propagation before rerunning."
     fi
 done
