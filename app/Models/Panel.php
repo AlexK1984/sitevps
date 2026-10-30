@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Services\PanelConnectionResult;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Attributes\Hidden;
 use Illuminate\Database\Eloquent\Model;
@@ -17,6 +18,18 @@ class Panel extends Model
             'password' => 'encrypted',
             'connection_checked_at' => 'datetime',
         ];
+    }
+
+    public function connectionDiagnosticMessage(): ?string
+    {
+        if (! $this->connection_diagnostic) {
+            return null;
+        }
+
+        return (new PanelConnectionResult(
+            $this->connection_status === 'online',
+            $this->connection_diagnostic,
+        ))->message();
     }
 
     public function users(): HasMany

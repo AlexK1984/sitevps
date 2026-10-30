@@ -412,10 +412,11 @@ class SubscriptionFlowTest extends TestCase
         $this->actingAs($admin)
             ->post('/admin/panels/'.$panel->id.'/connection-test')
             ->assertRedirect()
-            ->assertSessionHas('status', 'Проверка подключения завершена: панель доступна.');
+            ->assertSessionHas('status', 'Панель доступна: вход и read-only запрос списка inbound успешны.');
 
         $panel->refresh();
         $this->assertSame('online', $panel->connection_status);
+        $this->assertSame('ok', $panel->connection_diagnostic);
         $this->assertNotNull($panel->connection_checked_at);
 
         $this->get('/admin')
@@ -426,10 +427,14 @@ class SubscriptionFlowTest extends TestCase
             ->assertDontSee('panel-secret');
 
         Http::assertSentCount(2);
-        Http::assertNotSent(fn (ClientRequest $request) => str_contains($request->url(), '/addClient')
-            || str_contains($request->url(), '/updateClient'));
+        Http::assertSent(fn (ClientRequest $request) => str_ends_with($request->url(), '/login')
+            && $request->method() === 'POST'
+            && $request['username'] === 'admin'
+            && $request['password'] === 'panel-secret');
         Http::assertSent(fn (ClientRequest $request) => str_ends_with($request->url(), '/panel/api/inbounds/list')
             && $request->method() === 'GET');
+        Http::assertNotSent(fn (ClientRequest $request) => $request->method() !== 'GET'
+            && ! str_ends_with($request->url(), '/login'));
     }
 
     public function test_panel_api_errors_are_recorded_as_offline_without_exposing_response_details(): void
@@ -446,13 +451,15 @@ class SubscriptionFlowTest extends TestCase
 
         $this->actingAs($admin)->post('/admin/panels/'.$panel->id.'/connection-test')
             ->assertRedirect()
-            ->assertSessionHas('status', 'Проверка подключения завершена: панель недоступна или отклонила запрос.');
+            ->assertSessionHas('status', 'Панель вернула внутреннюю HTTP-ошибку. Проверьте состояние панели и её reverse proxy.');
 
         $panel->refresh();
         $this->assertSame('offline', $panel->connection_status);
+        $this->assertSame('server_error', $panel->connection_diagnostic);
         $this->assertNotNull($panel->connection_checked_at);
 
-        $this->get('/admin')->assertSee('Офлайн')->assertDontSee('private API details')->assertDontSee('panel-secret');
+        $this->get('/admin')->assertSee('Офлайн')->assertSee('Панель вернула внутреннюю HTTP-ошибку')
+            ->assertDontSee('private API details')->assertDontSee('panel-secret');
     }
 
     public function test_panel_authentication_failure_is_recorded_as_offline_without_exposing_details(): void
@@ -468,13 +475,33 @@ class SubscriptionFlowTest extends TestCase
 
         $this->actingAs($admin)->post('/admin/panels/'.$panel->id.'/connection-test')
             ->assertRedirect()
-            ->assertSessionHas('status', 'Проверка подключения завершена: панель недоступна или отклонила запрос.');
+            ->assertSessionHas('status', 'Панель отклонила учётные данные или сессию. Проверьте логин и пароль.');
 
         $panel->refresh();
         $this->assertSame('offline', $panel->connection_status);
+        $this->assertSame('auth_failed', $panel->connection_diagnostic);
         $this->assertNotNull($panel->connection_checked_at);
 
-        $this->get('/admin')->assertSee('Офлайн')->assertDontSee('invalid password')->assertDontSee('panel-secret');
+        $this->get('/admin')->assertSee('Офлайн')->assertSee('Панель отклонила учётные данные')
+            ->assertDontSee('invalid password')->assertDontSee('panel-secret');
+        Http::assertSentCount(1);
+    }
+
+    public function test_panel_http_unauthorized_is_reported_as_authentication_failure(): void
+    {
+        Http::fake([
+            'https://panel.example.com/login' => Http::response(['error' => 'private authentication details'], 401),
+        ]);
+        $admin = User::factory()->create(['is_admin' => true]);
+        $panel = $this->createPanel('Panel');
+
+        $this->actingAs($admin)->post('/admin/panels/'.$panel->id.'/connection-test')
+            ->assertRedirect()
+            ->assertSessionHas('status', 'Панель отклонила учётные данные или сессию. Проверьте логин и пароль.');
+
+        $this->assertSame('auth_failed', $panel->fresh()->connection_diagnostic);
+        $this->get('/admin')->assertSee('Панель отклонила учётные данные')
+            ->assertDontSee('private authentication details');
         Http::assertSentCount(1);
     }
 
@@ -488,13 +515,87 @@ class SubscriptionFlowTest extends TestCase
 
         $this->actingAs($admin)->post('/admin/panels/'.$panel->id.'/connection-test')
             ->assertRedirect()
-            ->assertSessionHas('status', 'Проверка подключения завершена: панель недоступна или отклонила запрос.');
+            ->assertSessionHas('status', 'Истекло время ожидания ответа панели. Проверьте доступность и firewall.');
 
         $panel->refresh();
         $this->assertSame('offline', $panel->connection_status);
+        $this->assertSame('connect_timeout', $panel->connection_diagnostic);
         $this->assertNotNull($panel->connection_checked_at);
 
-        $this->get('/admin')->assertSee('Офлайн')->assertDontSee('private timeout details')->assertDontSee('panel-secret');
+        $this->get('/admin')->assertSee('Офлайн')->assertSee('Истекло время ожидания ответа панели')
+            ->assertDontSee('private timeout details')->assertDontSee('panel-secret');
+    }
+
+    public function test_panel_connection_check_classifies_tls_failure_without_leaking_details(): void
+    {
+        $admin = User::factory()->create(['is_admin' => true]);
+        $tlsPanel = $this->createPanel('Panel');
+        Http::fake([
+            'https://panel.example.com/login' => Http::failedConnection(
+                'cURL error 60: SSL certificate secret-path?token=private',
+            ),
+        ]);
+
+        $this->actingAs($admin)->post('/admin/panels/'.$tlsPanel->id.'/connection-test')
+            ->assertRedirect()
+            ->assertSessionHas('status', 'Ошибка TLS-сертификата панели. Проверьте сертификат и имя хоста; не отключайте проверку TLS.');
+        $this->assertSame('tls_error', $tlsPanel->fresh()->connection_diagnostic);
+        $this->get('/admin')->assertSee('Ошибка TLS-сертификата панели')
+            ->assertDontSee('secret-path')->assertDontSee('token=private');
+    }
+
+    public function test_panel_connection_check_classifies_dns_failure_without_leaking_details(): void
+    {
+        $admin = User::factory()->create(['is_admin' => true]);
+        $panel = $this->createPanel('Panel');
+        Http::fake([
+            'https://panel.example.com/login' => Http::failedConnection(
+                'cURL error 6: Could not resolve host private-panel.example',
+            ),
+        ]);
+        $this->actingAs($admin)->post('/admin/panels/'.$panel->id.'/connection-test')
+            ->assertRedirect()
+            ->assertSessionHas('status', 'Не удалось разрешить DNS-имя панели. Проверьте DNS с сервера сайта.');
+        $this->assertSame('dns_error', $panel->fresh()->connection_diagnostic);
+        $this->get('/admin')->assertSee('Не удалось разрешить DNS-имя панели')
+            ->assertDontSee('private-panel.example');
+    }
+
+    public function test_panel_connection_check_reports_missing_api_without_raw_response(): void
+    {
+        $admin = User::factory()->create(['is_admin' => true]);
+        $panel = $this->createPanel('Panel');
+        Http::fake([
+            'https://panel.example.com/login' => Http::response(['success' => true]),
+            'https://panel.example.com/panel/api/inbounds/list' => Http::response([
+                'success' => false,
+                'msg' => 'version-specific private response',
+            ], 404),
+        ]);
+
+        $this->actingAs($admin)->post('/admin/panels/'.$panel->id.'/connection-test')
+            ->assertRedirect()
+            ->assertSessionHas('status', 'Не найден API endpoint списка inbound. Проверьте base URL, reverse-proxy path и версию 3x-ui.');
+        $this->assertSame('api_endpoint_not_found', $panel->fresh()->connection_diagnostic);
+        $this->get('/admin')->assertSee('Не найден API endpoint списка inbound')
+            ->assertDontSee('version-specific private response');
+    }
+
+    public function test_panel_connection_check_reports_missing_inbound(): void
+    {
+        $admin = User::factory()->create(['is_admin' => true]);
+        $panel = $this->createPanel('Panel');
+        Http::fake([
+            'https://panel.example.com/login' => Http::response(['success' => true]),
+            'https://panel.example.com/panel/api/inbounds/list' => Http::response([
+                'success' => true,
+                'obj' => [['id' => 999]],
+            ]),
+        ]);
+        $this->actingAs($admin)->post('/admin/panels/'.$panel->id.'/connection-test')
+            ->assertRedirect()
+            ->assertSessionHas('status', 'Вход в панель выполнен, но настроенный inbound ID не найден.');
+        $this->assertSame('inbound_not_found', $panel->fresh()->connection_diagnostic);
     }
 
     public function test_admin_can_create_a_secure_remote_panel(): void
@@ -538,6 +639,7 @@ class SubscriptionFlowTest extends TestCase
 
         $panel->refresh();
         $this->assertNull($panel->connection_status);
+        $this->assertNull($panel->connection_diagnostic);
         $this->assertNull($panel->connection_checked_at);
         $this->assertSame('replacement-secret', $panel->password);
     }

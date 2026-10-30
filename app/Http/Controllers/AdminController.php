@@ -290,6 +290,7 @@ class AdminController extends Controller
         if ($connectionSettingsChanged) {
             $panel->forceFill([
                 'connection_status' => null,
+                'connection_diagnostic' => null,
                 'connection_checked_at' => null,
             ])->save();
         }
@@ -299,16 +300,15 @@ class AdminController extends Controller
 
     public function checkPanelConnection(Panel $panel, ThreeXUiClient $client): RedirectResponse
     {
-        $online = $client->testConnection($panel);
+        $result = $client->testConnection($panel);
 
         $panel->forceFill([
-            'connection_status' => $online ? 'online' : 'offline',
+            'connection_status' => $result->online ? 'online' : 'offline',
+            'connection_diagnostic' => $result->diagnostic,
             'connection_checked_at' => now(),
         ])->save();
 
-        return back()->with('status', $online
-            ? 'Проверка подключения завершена: панель доступна.'
-            : 'Проверка подключения завершена: панель недоступна или отклонила запрос.');
+        return back()->with('status', $result->message());
     }
 
     public function assignPanel(Request $request, User $user): RedirectResponse

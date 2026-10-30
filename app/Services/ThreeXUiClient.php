@@ -12,34 +12,92 @@ use Illuminate\Support\Facades\Http;
 
 class ThreeXUiClient
 {
-    public function testConnection(Panel $panel): bool
+    public function testConnection(Panel $panel): PanelConnectionResult
     {
         $cookies = new CookieJar;
         $baseUrl = rtrim($panel->base_url, '/');
 
         try {
             $login = $this->login($panel, $cookies);
+        } catch (ConnectionException $exception) {
+            return new PanelConnectionResult(false, $this->classifyConnectionException($exception));
+        }
 
-            if (! $login->successful() || $login->json('success') !== true) {
-                return false;
-            }
+        if ($login->status() === 401 || $login->status() === 403
+            || ($login->successful() && $login->json('success') === false)) {
+            return new PanelConnectionResult(false, 'auth_failed');
+        }
+        if ($login->status() === 404 || $login->status() === 405) {
+            return new PanelConnectionResult(false, 'login_endpoint_not_found');
+        }
+        if (! $login->successful()) {
+            return new PanelConnectionResult(false, $this->classifyHttpStatus($login->status()));
+        }
+        if ($login->json('success') !== true) {
+            return new PanelConnectionResult(false, 'unsupported_api');
+        }
 
+        try {
             $inbounds = Http::withOptions(['cookies' => $cookies])
                 ->acceptJson()
                 ->timeout(15)
                 ->get($baseUrl.'/panel/api/inbounds/list');
-
-            $inboundList = $inbounds->json('obj');
-
-            if (! $inbounds->successful() || $inbounds->json('success') !== true || ! is_array($inboundList)) {
-                return false;
-            }
-
-            return collect($inboundList)
-                ->contains(fn ($item) => (int) data_get($item, 'id') === (int) $panel->inbound_id);
-        } catch (ConnectionException) {
-            return false;
+        } catch (ConnectionException $exception) {
+            return new PanelConnectionResult(false, $this->classifyConnectionException($exception));
         }
+
+        if ($inbounds->status() === 401 || $inbounds->status() === 403) {
+            return new PanelConnectionResult(false, 'auth_failed');
+        }
+        if ($inbounds->status() === 404 || $inbounds->status() === 405) {
+            return new PanelConnectionResult(false, 'api_endpoint_not_found');
+        }
+        if (! $inbounds->successful()) {
+            return new PanelConnectionResult(false, $this->classifyHttpStatus($inbounds->status()));
+        }
+        if ($inbounds->json('success') !== true || ! is_array($inbounds->json('obj'))) {
+            return new PanelConnectionResult(false, 'unsupported_api');
+        }
+
+        $hasInbound = collect($inbounds->json('obj'))
+            ->contains(fn ($item) => (int) data_get($item, 'id') === (int) $panel->inbound_id);
+
+        return new PanelConnectionResult($hasInbound, $hasInbound ? 'ok' : 'inbound_not_found');
+    }
+
+    private function classifyHttpStatus(int $status): string
+    {
+        return $status >= 500 ? 'server_error' : 'http_error';
+    }
+
+    private function classifyConnectionException(ConnectionException $exception): string
+    {
+        $message = strtolower($exception->getMessage());
+
+        if (str_contains($message, 'ssl certificate')
+            || str_contains($message, 'certificate verify')
+            || str_contains($message, 'tls')
+            || str_contains($message, 'curl error 35')
+            || str_contains($message, 'curl error 60')) {
+            return 'tls_error';
+        }
+        if (str_contains($message, 'could not resolve')
+            || str_contains($message, 'name or service not known')
+            || str_contains($message, 'getaddrinfo')
+            || str_contains($message, 'curl error 6')) {
+            return 'dns_error';
+        }
+        if (str_contains($message, 'timed out')
+            || str_contains($message, 'timeout')
+            || str_contains($message, 'curl error 28')) {
+            return 'connect_timeout';
+        }
+        if (str_contains($message, 'connection refused')
+            || str_contains($message, 'curl error 7')) {
+            return 'connection_refused';
+        }
+
+        return 'network_error';
     }
 
     public function provision(Panel $panel, Subscription $subscription): void

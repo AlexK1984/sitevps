@@ -167,6 +167,9 @@
                             <span class="status-pill">Не проверялась</span>
                         @endif
                         <br><small>Последняя проверка: {{ $panel->connection_checked_at?->format('d.m.Y H:i:s') ?? 'нет' }}</small>
+                        @if($panel->connection_status === 'offline' && $panel->connectionDiagnosticMessage())
+                            <br><small>{{ $panel->connectionDiagnosticMessage() }}</small>
+                        @endif
                     </p>
                     <label>Название<input name="name" value="{{ $panel->name }}" required></label><label>HTTPS URL<input type="url" name="base_url" value="{{ $panel->base_url }}" required></label>
                     <label>Префикс ссылки подписки<input type="url" name="subscription_url_prefix" value="{{ $panel->subscription_url_prefix }}" placeholder="https://vpn.example.com:2096/sub" required></label>
