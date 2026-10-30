@@ -166,42 +166,54 @@ class ThreeXUiClient
 
         try {
             $csrf = $this->csrfToken($panel, $cookies, followRedirects: false);
-            $csrfToken = null;
-            if ($csrf->status() !== 404 && $csrf->status() !== 405) {
-                $csrfPayload = $csrf->json();
-                if (! $csrf->successful() || ! is_array($csrfPayload)
-                    || ($csrfPayload['success'] ?? null) !== true
-                    || ! is_string($csrfPayload['obj'] ?? null) || $csrfPayload['obj'] === '') {
-                    throw new PanelApiException('Не удалось получить CSRF-токен панели 3x-ui.');
-                }
-                $csrfToken = $csrfPayload['obj'];
-            }
+        } catch (ConnectionException $exception) {
+            throw $this->connectionFailure($exception, 'получить CSRF-токен');
+        }
 
+        $csrfToken = null;
+        if ($csrf->status() !== 404 && $csrf->status() !== 405) {
+            $csrfPayload = $this->successfulApiResponse($csrf, 'получить CSRF-токен');
+            if (! is_string($csrfPayload['obj'] ?? null) || $csrfPayload['obj'] === '') {
+                throw new PanelApiException('Панель 3x-ui вернула некорректный ответ при получении CSRF-токена.');
+            }
+            $csrfToken = $csrfPayload['obj'];
+        }
+
+        try {
             $login = $this->login($panel, $cookies, $csrfToken, followRedirects: false);
+        } catch (ConnectionException $exception) {
+            throw $this->connectionFailure($exception, 'войти в панель');
+        }
+        $this->successfulApiResponse($login, 'войти в панель');
 
-            if (! $login->successful() || $login->json('success') !== true) {
-                throw new PanelApiException('Не удалось войти в панель 3x-ui.');
-            }
-
+        try {
             $inbounds = Http::withOptions(['cookies' => $cookies])
                 ->withHeaders(['X-Requested-With' => 'XMLHttpRequest'])
                 ->acceptJson()
+                ->withoutRedirecting()
                 ->timeout(15)
                 ->get($baseUrl.'/panel/api/inbounds/list');
-
-            $inbound = collect($inbounds->json('obj', []))
-                ->first(fn ($item) => (int) data_get($item, 'id') === (int) $panel->inbound_id);
-
-            if (! $inbounds->successful() || ! $inbounds->json('success') || ! is_array($inbound)) {
-                throw new PanelApiException('Выбранный inbound не найден в панели 3x-ui.');
-            }
         } catch (ConnectionException $exception) {
-            throw new PanelApiException('Сайт не смог подключиться к панели 3x-ui.', previous: $exception);
+            throw $this->connectionFailure($exception, 'получить список inbound');
+        }
+        $inboundsPayload = $this->successfulApiResponse($inbounds, 'получить список inbound');
+        if (! is_array($inboundsPayload['obj'] ?? null)) {
+            throw new PanelApiException('Панель 3x-ui вернула некорректный список inbound.');
+        }
+        $inbound = collect($inboundsPayload['obj'] ?? [])
+            ->first(fn ($item) => (int) data_get($item, 'id') === (int) $panel->inbound_id);
+
+        if (! is_array($inbound)) {
+            throw new PanelApiException('Настроенный inbound не найден в панели 3x-ui.');
         }
 
-        $clients = json_decode((string) data_get($inbound, 'settings', '{}'), true);
-        $exists = collect(is_array($clients) ? ($clients['clients'] ?? []) : [])
-            ->contains(fn ($client) => data_get($client, 'id') === $subscription->client_uuid);
+        $inboundSettings = data_get($inbound, 'settings');
+        if (is_string($inboundSettings)) {
+            $inboundSettings = json_decode($inboundSettings, true);
+        }
+        if (! is_array($inboundSettings) || ! is_array($inboundSettings['clients'] ?? null)) {
+            throw new PanelApiException('Панель 3x-ui вернула некорректные настройки выбранного inbound.');
+        }
 
         $client = [
             'id' => $subscription->client_uuid,
@@ -215,27 +227,72 @@ class ThreeXUiClient
             'reset' => 0,
         ];
 
-        $endpoint = $exists
-            ? '/panel/api/inbounds/updateClient/'.rawurlencode($subscription->client_uuid)
-            : '/panel/api/inbounds/addClient';
-
         try {
+            $headers = ['X-Requested-With' => 'XMLHttpRequest'];
+            if ($csrfToken !== null) {
+                $headers['X-CSRF-Token'] = $csrfToken;
+            }
+
             $response = Http::withOptions(['cookies' => $cookies])
-                ->withHeaders($csrfToken !== null ? ['X-CSRF-Token' => $csrfToken] : [])
+                ->withHeaders($headers)
                 ->acceptJson()
                 ->asJson()
+                ->withoutRedirecting()
                 ->timeout(15)
-                ->post($baseUrl.$endpoint, [
-                    'id' => $panel->inbound_id,
-                    'settings' => json_encode(['clients' => [$client]], JSON_THROW_ON_ERROR),
+                ->post($baseUrl.'/panel/api/clients/add', [
+                    'client' => $client,
+                    'inboundIds' => [(int) $panel->inbound_id],
                 ]);
         } catch (ConnectionException $exception) {
-            throw new PanelApiException('Запрос к панели 3x-ui завершился ошибкой соединения.', previous: $exception);
+            throw $this->connectionFailure($exception, 'создать или обновить клиента');
         }
 
-        if (! $response->successful() || ! $response->json('success')) {
-            throw new PanelApiException('Панель 3x-ui не приняла параметры подписки.');
+        $this->successfulApiResponse($response, 'создать или обновить клиента');
+    }
+
+    private function successfulApiResponse(Response $response, string $stage): array
+    {
+        $status = $response->status();
+
+        if ($response->redirect()) {
+            throw new PanelApiException("Ответ панели 3x-ui перенаправлен на этапе «{$stage}» (HTTP {$status}); проверьте адрес панели и сессию.");
         }
+        if ($status === 401 || $status === 403) {
+            throw new PanelApiException("Панель 3x-ui отклонила авторизацию или сессию на этапе «{$stage}» (HTTP {$status}).");
+        }
+        if ($status === 404 || $status === 405) {
+            throw new PanelApiException("Маршрут API панели 3x-ui не найден или недоступен на этапе «{$stage}» (HTTP {$status}); проверьте base path и совместимость версии.");
+        }
+        if (! $response->successful()) {
+            throw new PanelApiException("Панель 3x-ui вернула HTTP {$status} на этапе «{$stage}».");
+        }
+        if ($this->isHtmlResponse($response)) {
+            throw new PanelApiException("Панель 3x-ui вернула HTML вместо ответа API на этапе «{$stage}» (HTTP {$status}); проверьте base path.");
+        }
+
+        $payload = $response->json();
+        if (! is_array($payload) || ! array_key_exists('success', $payload)) {
+            throw new PanelApiException("Панель 3x-ui вернула некорректный ответ API на этапе «{$stage}» (HTTP {$status}).");
+        }
+        if ($payload['success'] !== true) {
+            throw new PanelApiException("Панель 3x-ui отклонила запрос на этапе «{$stage}» (HTTP {$status}); ответ не содержит подробностей во избежание записи чувствительных данных.");
+        }
+
+        return $payload;
+    }
+
+    private function connectionFailure(ConnectionException $exception, string $stage): PanelApiException
+    {
+        $category = $this->classifyConnectionException($exception);
+        $description = match ($category) {
+            'dns_error' => 'ошибка DNS',
+            'connect_timeout' => 'истекло время ожидания соединения',
+            'tls_error' => 'ошибка проверки TLS-сертификата',
+            'connection_refused' => 'соединение отклонено',
+            default => 'сетевая ошибка',
+        };
+
+        return new PanelApiException("Не удалось {$stage}: {$description}.");
     }
 
     private function csrfToken(Panel $panel, CookieJar $cookies, bool $followRedirects): Response

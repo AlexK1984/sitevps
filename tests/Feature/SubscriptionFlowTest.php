@@ -24,6 +24,7 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
 use Mockery;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 class SubscriptionFlowTest extends TestCase
@@ -1345,15 +1346,16 @@ class SubscriptionFlowTest extends TestCase
             && str_contains(data_get($request->data(), 'text', ''), 'не удалось сопоставить'));
     }
 
-    public function test_three_x_ui_client_uses_the_configured_inbound_and_client_limits(): void
+    #[DataProvider('threeXUiInboundSettingsProvider')]
+    public function test_three_x_ui_client_uses_the_configured_inbound_and_client_limits(array|string $settings): void
     {
         $this->fakePanelHttp([
             'https://panel.example.com/login' => Http::response(['success' => true], 200, ['Set-Cookie' => '3x-ui=session; path=/']),
             'https://panel.example.com/panel/api/inbounds/list' => Http::response([
                 'success' => true,
-                'obj' => [['id' => 1, 'settings' => json_encode(['clients' => []])]],
+                'obj' => [['id' => 1, 'settings' => $settings]],
             ]),
-            'https://panel.example.com/panel/api/inbounds/addClient' => Http::response(['success' => true]),
+            'https://panel.example.com/panel/api/clients/add' => Http::response(['success' => true]),
         ]);
 
         $panel = Panel::create([
@@ -1378,13 +1380,86 @@ class SubscriptionFlowTest extends TestCase
             'status' => 'provisioning',
         ]);
 
-        app(ThreeXUiClient::class)->provision($panel, $subscription);
+        $client = app(ThreeXUiClient::class);
+        $client->provision($panel, $subscription);
+        $client->provision($panel, $subscription);
 
-        Http::assertSent(fn (ClientRequest $request) => str_ends_with($request->url(), '/panel/api/inbounds/addClient')
+        Http::assertSent(fn (ClientRequest $request) => str_ends_with($request->url(), '/panel/api/clients/add')
             && $request->hasHeader('X-CSRF-Token', 'test-csrf')
-            && $request->data()['id'] === 1
-            && data_get(json_decode($request->data()['settings'], true), 'clients.0.limitIp') === 3
-            && data_get(json_decode($request->data()['settings'], true), 'clients.0.totalGB') === 100_000_000_000);
+            && $request->hasHeader('X-Requested-With', 'XMLHttpRequest')
+            && data_get($request->data(), 'inboundIds') === [1]
+            && data_get($request->data(), 'client.email') === 'user-1@sitevps'
+            && data_get($request->data(), 'client.id') === $subscription->client_uuid
+            && data_get($request->data(), 'client.subId') === $subscription->sub_id
+            && data_get($request->data(), 'client.limitIp') === 3
+            && data_get($request->data(), 'client.totalGB') === 100_000_000_000);
+        $writeRequests = Http::recorded()
+            ->filter(fn (array $recorded) => str_ends_with($recorded[0]->url(), '/panel/api/clients/add'));
+        $this->assertCount(2, $writeRequests);
+        $this->assertSame(
+            $writeRequests->first()[0]->data(),
+            $writeRequests->last()[0]->data(),
+            'Retry must preserve the same client identity and payload.',
+        );
+        Http::assertNotSent(fn (ClientRequest $request) => str_contains($request->url(), '/inbounds/addClient')
+            || str_contains($request->url(), '/inbounds/updateClient/'));
+    }
+
+    public static function threeXUiInboundSettingsProvider(): array
+    {
+        return [
+            '3x-ui JSON object' => [['clients' => []]],
+            'legacy JSON string' => [json_encode(['clients' => []], JSON_THROW_ON_ERROR)],
+        ];
+    }
+
+    public function test_three_x_ui_client_reports_safe_write_api_http_diagnostics(): void
+    {
+        $this->fakePanelHttp([
+            'https://panel.example.com/path-for-test/csrf-token' => Http::response(
+                ['success' => true, 'obj' => 'test-csrf'],
+                200,
+                ['Set-Cookie' => '3x-ui=session; Path=/; HttpOnly'],
+            ),
+            'https://panel.example.com/path-for-test/login' => Http::response(['success' => true]),
+            'https://panel.example.com/path-for-test/panel/api/inbounds/list' => Http::response([
+                'success' => true,
+                'obj' => [['id' => 1, 'settings' => ['clients' => []]]],
+            ]),
+            'https://panel.example.com/path-for-test/panel/api/clients/add' => Http::response('not found', 404, ['Content-Type' => 'text/plain']),
+        ]);
+
+        $panel = Panel::create([
+            'name' => 'Panel one',
+            'base_url' => 'https://panel.example.com/path-for-test',
+            'subscription_url_prefix' => 'https://vpn.example.com:2096/sub',
+            'username' => 'admin',
+            'password' => 'panel-secret',
+            'inbound_id' => 1,
+            'protocol' => 'vless',
+        ]);
+        $user = User::factory()->create();
+        $subscription = Subscription::create([
+            'user_id' => $user->id,
+            'panel_id' => $panel->id,
+            'client_uuid' => (string) Str::uuid(),
+            'sub_id' => 'AbC123SubId',
+            'client_email' => 'user-1@sitevps',
+            'expires_at' => now()->addDays(30),
+            'traffic_limit_bytes' => 100_000_000_000,
+            'connection_limit' => 3,
+            'status' => 'provisioning',
+        ]);
+
+        try {
+            app(ThreeXUiClient::class)->provision($panel, $subscription);
+            $this->fail('Expected the missing panel API route to be reported.');
+        } catch (PanelApiException $exception) {
+            $this->assertStringContainsString('HTTP 404', $exception->getMessage());
+            $this->assertStringContainsString('совместимость версии', $exception->getMessage());
+            $this->assertStringNotContainsString('path-for-test', $exception->getMessage());
+            $this->assertStringNotContainsString('panel-secret', $exception->getMessage());
+        }
     }
 
     private function createTariff(): Tariff
