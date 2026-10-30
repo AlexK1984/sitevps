@@ -12,6 +12,12 @@ fail() {
     exit 1
 }
 
+open_interactive_tty() {
+    if ! { exec 3<>/dev/tty; } 2>/dev/null; then
+        fail "An interactive terminal is required. Run this command from a terminal with a controlling TTY."
+    fi
+}
+
 cleanup() {
     if [[ "$CLONE_CREATED" -eq 1 && -d "$CHECKOUT_DIR" ]]; then
         rm -rf -- "$CHECKOUT_DIR"
@@ -30,6 +36,8 @@ trap 'on_error "$?"' ERR
 if [[ "${EUID}" -ne 0 ]]; then
     fail "Run bootstrap as root (for example: curl -fsSL <bootstrap-url> | sudo bash)."
 fi
+
+open_interactive_tty
 
 if [[ ! -r /etc/os-release ]]; then
     fail "Cannot identify the operating system."

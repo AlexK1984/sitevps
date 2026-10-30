@@ -16,6 +16,12 @@ fail() {
     exit 1
 }
 
+open_interactive_tty() {
+    if ! { exec 3<>/dev/tty; } 2>/dev/null; then
+        fail "An interactive terminal is required. Run this installer from a terminal with a controlling TTY."
+    fi
+}
+
 cleanup() {
     if [[ -n "$TEMP_NGINX_CONFIG" && -e "$TEMP_NGINX_CONFIG" ]]; then
         rm -f -- "$TEMP_NGINX_CONFIG"
@@ -135,7 +141,7 @@ check_firewall_status() {
     done
 
     printf 'No active local firewall rules that could block inbound traffic were detected.\n'
-    read -r -p "Confirm your VPS/provider firewall permits inbound TCP 80 and 443 while retaining SSH access [y/N]: " FIREWALL_CONFIRMED ||
+    read -r -u 3 -p "Confirm your VPS/provider firewall permits inbound TCP 80 and 443 while retaining SSH access [y/N]: " FIREWALL_CONFIRMED ||
         fail "Firewall confirmation is required."
     if [[ ! "$FIREWALL_CONFIRMED" =~ ^[Yy]([Ee][Ss])?$ ]]; then
         fail "Before rerunning, allow inbound TCP 80/443 in the VPS/provider firewall and verify TCP 22 remains available for SSH."
@@ -145,6 +151,8 @@ check_firewall_status() {
 if [[ "${EUID}" -ne 0 ]]; then
     fail "Run this installer as root (for example: sudo bash scripts/install.sh)."
 fi
+
+open_interactive_tty
 
 if [[ ! -r /etc/os-release ]]; then
     fail "Cannot identify the operating system."
@@ -246,7 +254,7 @@ fi
 
 printf 'Required inbound ports: TCP 22 (SSH administration), TCP 80 (HTTP and certificate validation), and TCP 443 (HTTPS).\n'
 printf 'Ensure your VPS firewall/security group allows these ports; this installer will not change firewall rules.\n\n'
-read -r -p "Website domain (for example vpn.example.com): " DOMAIN || fail "A website domain is required."
+read -r -u 3 -p "Website domain (for example vpn.example.com): " DOMAIN || fail "A website domain is required."
 if [[ ! "$DOMAIN" =~ ^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$ ]]; then
     fail "Enter a valid public DNS domain name."
 fi
@@ -275,7 +283,7 @@ for address_family in 4 6; do
 done
 if [[ "${#PUBLIC_IPS[@]}" -eq 0 ]]; then
     printf 'Automatic public-IP detection is unavailable. Enter the VPS public IPv4/IPv6 address(es) explicitly, comma-separated.\n'
-    read -r -p "VPS public IP address(es): " manual_public_ips ||
+    read -r -u 3 -p "VPS public IP address(es): " manual_public_ips ||
         fail "Public-IP confirmation is required to validate DNS."
     normalized_public_ips="$(python3 -c '
 import ipaddress
@@ -307,12 +315,12 @@ for dns_address in "${DNS_ADDRESSES[@]}"; do
     fi
 done
 
-read -r -p "Email address for Let's Encrypt: " CERT_EMAIL || fail "A certificate email address is required."
+read -r -u 3 -p "Email address for Let's Encrypt: " CERT_EMAIL || fail "A certificate email address is required."
 if [[ ! "$CERT_EMAIL" =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ ]]; then
     fail "Enter a valid certificate email address."
 fi
 
-read -r -p "Administrator email: " ADMIN_EMAIL || fail "An administrator email address is required."
+read -r -u 3 -p "Administrator email: " ADMIN_EMAIL || fail "An administrator email address is required."
 if [[ ! "$ADMIN_EMAIL" =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ ]]; then
     fail "Enter a valid administrator email address."
 fi
@@ -515,7 +523,7 @@ if path_exists "$DATA_DIR/.admin-created" &&
     fail "The administrator setup marker is not a regular file."
 fi
 if [[ ! -f "$DATA_DIR/.admin-created" ]]; then
-    runuser -u "$APP_USER" -- php "$APP_DIR/artisan" app:make-admin "$ADMIN_EMAIL"
+    runuser -u "$APP_USER" -- php "$APP_DIR/artisan" app:make-admin "$ADMIN_EMAIL" <&3
     touch "$DATA_DIR/.admin-created"
     chown root:root "$DATA_DIR/.admin-created"
     chmod 600 "$DATA_DIR/.admin-created"
