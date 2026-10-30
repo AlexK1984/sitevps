@@ -291,6 +291,7 @@ class AdminController extends Controller
             $panel->forceFill([
                 'connection_status' => null,
                 'connection_diagnostic' => null,
+                'connection_http_status' => null,
                 'connection_checked_at' => null,
             ])->save();
         }
@@ -305,6 +306,7 @@ class AdminController extends Controller
         $panel->forceFill([
             'connection_status' => $result->online ? 'online' : 'offline',
             'connection_diagnostic' => $result->diagnostic,
+            'connection_http_status' => $result->httpStatus,
             'connection_checked_at' => now(),
         ])->save();
 

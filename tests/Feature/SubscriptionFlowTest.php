@@ -399,7 +399,7 @@ class SubscriptionFlowTest extends TestCase
 
     public function test_admin_can_check_panel_connectivity_without_mutating_the_panel(): void
     {
-        Http::fake([
+        $this->fakePanelHttp([
             'https://panel.example.com/login' => Http::response(['success' => true], 200, ['Set-Cookie' => '3x-ui=session; path=/']),
             'https://panel.example.com/panel/api/inbounds/list' => Http::response([
                 'success' => true,
@@ -412,11 +412,12 @@ class SubscriptionFlowTest extends TestCase
         $this->actingAs($admin)
             ->post('/admin/panels/'.$panel->id.'/connection-test')
             ->assertRedirect()
-            ->assertSessionHas('status', 'Панель доступна: вход и read-only запрос списка inbound успешны.');
+            ->assertSessionHas('status', 'HTTP 200: Панель доступна: вход и read-only запрос списка inbound успешны.');
 
         $panel->refresh();
         $this->assertSame('online', $panel->connection_status);
         $this->assertSame('ok', $panel->connection_diagnostic);
+        $this->assertSame(200, $panel->connection_http_status);
         $this->assertNotNull($panel->connection_checked_at);
 
         $this->get('/admin')
@@ -426,20 +427,24 @@ class SubscriptionFlowTest extends TestCase
             ->assertSee($panel->connection_checked_at->format('d.m.Y H:i:s'))
             ->assertDontSee('panel-secret');
 
-        Http::assertSentCount(2);
+        Http::assertSentCount(3);
         Http::assertSent(fn (ClientRequest $request) => str_ends_with($request->url(), '/login')
             && $request->method() === 'POST'
+            && $request->hasHeader('X-CSRF-Token', 'test-csrf')
+            && $request->hasHeader('Cookie', '3x-ui=session')
             && $request['username'] === 'admin'
             && $request['password'] === 'panel-secret');
         Http::assertSent(fn (ClientRequest $request) => str_ends_with($request->url(), '/panel/api/inbounds/list')
-            && $request->method() === 'GET');
+            && $request->method() === 'GET'
+            && $request->hasHeader('X-Requested-With', 'XMLHttpRequest')
+            && $request->hasHeader('Cookie', '3x-ui=session'));
         Http::assertNotSent(fn (ClientRequest $request) => $request->method() !== 'GET'
             && ! str_ends_with($request->url(), '/login'));
     }
 
     public function test_panel_api_errors_are_recorded_as_offline_without_exposing_response_details(): void
     {
-        Http::fake([
+        $this->fakePanelHttp([
             'https://panel.example.com/login' => Http::response(['success' => true]),
             'https://panel.example.com/panel/api/inbounds/list' => Http::response([
                 'success' => false,
@@ -451,7 +456,7 @@ class SubscriptionFlowTest extends TestCase
 
         $this->actingAs($admin)->post('/admin/panels/'.$panel->id.'/connection-test')
             ->assertRedirect()
-            ->assertSessionHas('status', 'Панель вернула внутреннюю HTTP-ошибку. Проверьте состояние панели и её reverse proxy.');
+            ->assertSessionHas('status', 'HTTP 503: Панель вернула внутреннюю HTTP-ошибку. Проверьте состояние панели и её reverse proxy.');
 
         $panel->refresh();
         $this->assertSame('offline', $panel->connection_status);
@@ -464,7 +469,7 @@ class SubscriptionFlowTest extends TestCase
 
     public function test_panel_authentication_failure_is_recorded_as_offline_without_exposing_details(): void
     {
-        Http::fake([
+        $this->fakePanelHttp([
             'https://panel.example.com/login' => Http::response([
                 'success' => false,
                 'msg' => 'invalid password panel-secret',
@@ -475,21 +480,22 @@ class SubscriptionFlowTest extends TestCase
 
         $this->actingAs($admin)->post('/admin/panels/'.$panel->id.'/connection-test')
             ->assertRedirect()
-            ->assertSessionHas('status', 'Панель отклонила учётные данные или сессию. Проверьте логин и пароль.');
+            ->assertSessionHas('status', 'HTTP 200: 3x-ui вернула success=false для входа (возможны учётные данные, 2FA или ограничение входа).');
 
         $panel->refresh();
         $this->assertSame('offline', $panel->connection_status);
-        $this->assertSame('auth_failed', $panel->connection_diagnostic);
+        $this->assertSame('login_rejected', $panel->connection_diagnostic);
+        $this->assertSame(200, $panel->connection_http_status);
         $this->assertNotNull($panel->connection_checked_at);
 
-        $this->get('/admin')->assertSee('Офлайн')->assertSee('Панель отклонила учётные данные')
+        $this->get('/admin')->assertSee('Офлайн')->assertSee('HTTP 200: 3x-ui вернула success=false')
             ->assertDontSee('invalid password')->assertDontSee('panel-secret');
-        Http::assertSentCount(1);
+        Http::assertSentCount(2);
     }
 
     public function test_panel_http_unauthorized_is_reported_as_authentication_failure(): void
     {
-        Http::fake([
+        $this->fakePanelHttp([
             'https://panel.example.com/login' => Http::response(['error' => 'private authentication details'], 401),
         ]);
         $admin = User::factory()->create(['is_admin' => true]);
@@ -497,17 +503,210 @@ class SubscriptionFlowTest extends TestCase
 
         $this->actingAs($admin)->post('/admin/panels/'.$panel->id.'/connection-test')
             ->assertRedirect()
-            ->assertSessionHas('status', 'Панель отклонила учётные данные или сессию. Проверьте логин и пароль.');
+            ->assertSessionHas('status', 'HTTP 401: Endpoint входа вернул HTTP 401. Панель отклонила запрос входа; проверьте настройки входа и 2FA.');
 
-        $this->assertSame('auth_failed', $panel->fresh()->connection_diagnostic);
-        $this->get('/admin')->assertSee('Панель отклонила учётные данные')
+        $this->assertSame('login_unauthorized', $panel->fresh()->connection_diagnostic);
+        $this->assertSame(401, $panel->fresh()->connection_http_status);
+        $this->get('/admin')->assertSee('HTTP 401: Endpoint входа вернул HTTP 401')
             ->assertDontSee('private authentication details');
-        Http::assertSentCount(1);
+        Http::assertSentCount(2);
+    }
+
+    public function test_panel_login_forbidden_is_distinguished_from_bad_credentials(): void
+    {
+        $this->fakePanelHttp([
+            'https://panel.example.com/login' => Http::response(['error' => 'private'], 403),
+        ]);
+        $admin = User::factory()->create(['is_admin' => true]);
+        $panel = $this->createPanel('Panel');
+
+        $this->actingAs($admin)->post('/admin/panels/'.$panel->id.'/connection-test')
+            ->assertRedirect()
+            ->assertSessionHas('status', 'HTTP 403: Endpoint входа вернул HTTP 403. Доступ к входу запрещён политикой панели или reverse proxy.');
+
+        $this->assertSame('login_forbidden', $panel->fresh()->connection_diagnostic);
+        $this->assertSame(403, $panel->fresh()->connection_http_status);
+        $this->get('/admin')->assertSee('HTTP 403: Endpoint входа вернул HTTP 403')
+            ->assertDontSee('private');
+    }
+
+    public function test_panel_login_redirect_is_not_followed_or_misreported_as_bad_credentials(): void
+    {
+        $this->fakePanelHttp([
+            'https://panel.example.com/login' => Http::response('', 302, ['Location' => '/secret-panel/login']),
+        ]);
+        $admin = User::factory()->create(['is_admin' => true]);
+        $panel = $this->createPanel('Panel');
+
+        $this->actingAs($admin)->post('/admin/panels/'.$panel->id.'/connection-test')
+            ->assertRedirect()
+            ->assertSessionHas('status', 'HTTP 302: Endpoint входа перенаправил запрос вместо JSON-ответа. Проверьте base URL и reverse-proxy path.');
+
+        $this->assertSame('login_redirect', $panel->fresh()->connection_diagnostic);
+        $this->assertSame(302, $panel->fresh()->connection_http_status);
+        $this->get('/admin')->assertSee('HTTP 302: Endpoint входа перенаправил запрос')
+            ->assertDontSee('secret-panel');
+        Http::assertSentCount(2);
+    }
+
+    public function test_panel_login_html_response_is_reported_as_base_path_or_proxy_mismatch(): void
+    {
+        $this->fakePanelHttp([
+            'https://panel.example.com/login' => Http::response('<html>private panel login</html>', 200, [
+                'Content-Type' => 'text/html; charset=utf-8',
+            ]),
+        ]);
+        $admin = User::factory()->create(['is_admin' => true]);
+        $panel = $this->createPanel('Panel');
+
+        $this->actingAs($admin)->post('/admin/panels/'.$panel->id.'/connection-test')
+            ->assertRedirect()
+            ->assertSessionHas('status', 'HTTP 200: Endpoint входа вернул HTML-страницу вместо JSON API (возможно, неверен base URL или reverse-proxy path).');
+
+        $this->assertSame('login_html', $panel->fresh()->connection_diagnostic);
+        $this->assertSame(200, $panel->fresh()->connection_http_status);
+        $this->get('/admin')->assertSee('HTTP 200: Endpoint входа вернул HTML')
+            ->assertDontSee('private panel login');
+        Http::assertSentCount(2);
+    }
+
+    public function test_panel_login_malformed_json_is_not_reported_as_authentication_failure(): void
+    {
+        $this->fakePanelHttp([
+            'https://panel.example.com/login' => Http::response(['unexpected' => 'private'], 200),
+        ]);
+        $admin = User::factory()->create(['is_admin' => true]);
+        $panel = $this->createPanel('Panel');
+
+        $this->actingAs($admin)->post('/admin/panels/'.$panel->id.'/connection-test')
+            ->assertRedirect()
+            ->assertSessionHas('status', 'HTTP 200: Endpoint входа ответил, но JSON не соответствует формату 3x-ui.');
+
+        $this->assertSame('login_malformed', $panel->fresh()->connection_diagnostic);
+        $this->assertSame(200, $panel->fresh()->connection_http_status);
+        $this->get('/admin')->assertSee('HTTP 200: Endpoint входа ответил')
+            ->assertDontSee('private');
+        Http::assertSentCount(2);
+    }
+
+    public function test_panel_base_path_and_cookie_path_are_preserved_for_login_and_read_only_api(): void
+    {
+        $this->fakePanelHttp([
+            'https://panel.example.com/secret-panel/csrf-token' => Http::response(
+                ['success' => true, 'obj' => 'prefix-csrf'],
+                200,
+                ['Set-Cookie' => '3x-ui=prefix-session; Path=/secret-panel; HttpOnly'],
+            ),
+            'https://panel.example.com/secret-panel/login' => Http::response(
+                ['success' => true]
+            ),
+            'https://panel.example.com/secret-panel/panel/api/inbounds/list' => Http::response([
+                'success' => true,
+                'obj' => [['id' => 1]],
+            ]),
+        ]);
+        $admin = User::factory()->create(['is_admin' => true]);
+        $panel = $this->createPanel('Panel', [
+            'base_url' => 'https://panel.example.com/secret-panel/',
+        ]);
+
+        $this->actingAs($admin)->post('/admin/panels/'.$panel->id.'/connection-test')
+            ->assertRedirect()
+            ->assertSessionHas('status', 'HTTP 200: Панель доступна: вход и read-only запрос списка inbound успешны.');
+
+        Http::assertSent(fn (ClientRequest $request) => $request->url() === 'https://panel.example.com/secret-panel/csrf-token');
+        Http::assertSent(fn (ClientRequest $request) => $request->url() === 'https://panel.example.com/secret-panel/login'
+            && $request->hasHeader('Cookie', '3x-ui=prefix-session')
+            && $request->hasHeader('X-CSRF-Token', 'prefix-csrf'));
+        Http::assertSent(fn (ClientRequest $request) => $request->url() === 'https://panel.example.com/secret-panel/panel/api/inbounds/list'
+            && $request->hasHeader('Cookie', '3x-ui=prefix-session'));
+    }
+
+    public function test_panel_api_redirect_is_reported_as_session_or_path_issue(): void
+    {
+        $this->fakePanelHttp([
+            'https://panel.example.com/login' => Http::response(['success' => true]),
+            'https://panel.example.com/panel/api/inbounds/list' => Http::response('', 302, [
+                'Location' => '/secret-panel/login',
+            ]),
+        ]);
+        $admin = User::factory()->create(['is_admin' => true]);
+        $panel = $this->createPanel('Panel');
+
+        $this->actingAs($admin)->post('/admin/panels/'.$panel->id.'/connection-test')
+            ->assertRedirect()
+            ->assertSessionHas('status', 'HTTP 302: API списка inbound перенаправил запрос (возможно, на страницу входа). Проверьте base URL и cookie path.');
+
+        $this->assertSame('api_redirect', $panel->fresh()->connection_diagnostic);
+        $this->assertSame(302, $panel->fresh()->connection_http_status);
+        $this->get('/admin')->assertSee('HTTP 302: API списка inbound перенаправил запрос')
+            ->assertDontSee('secret-panel');
+    }
+
+    public function test_panel_api_unauthorized_is_reported_as_rejected_session_not_bad_password(): void
+    {
+        $this->fakePanelHttp([
+            'https://panel.example.com/login' => Http::response(['success' => true]),
+            'https://panel.example.com/panel/api/inbounds/list' => Http::response(['success' => false], 401),
+        ]);
+        $admin = User::factory()->create(['is_admin' => true]);
+        $panel = $this->createPanel('Panel');
+
+        $this->actingAs($admin)->post('/admin/panels/'.$panel->id.'/connection-test')
+            ->assertRedirect()
+            ->assertSessionHas('status', 'HTTP 401: API списка inbound вернул HTTP 401: панель не приняла сессию входа.');
+
+        $this->assertSame('api_unauthorized', $panel->fresh()->connection_diagnostic);
+        $this->assertSame(401, $panel->fresh()->connection_http_status);
+        $this->get('/admin')->assertSee('HTTP 401: API списка inbound вернул HTTP 401')
+            ->assertDontSee('panel-secret');
+    }
+
+    public function test_panel_api_forbidden_is_distinguished_from_an_unauthorized_session(): void
+    {
+        $this->fakePanelHttp([
+            'https://panel.example.com/login' => Http::response(['success' => true]),
+            'https://panel.example.com/panel/api/inbounds/list' => Http::response(['success' => false], 403),
+        ]);
+        $admin = User::factory()->create(['is_admin' => true]);
+        $panel = $this->createPanel('Panel');
+
+        $this->actingAs($admin)->post('/admin/panels/'.$panel->id.'/connection-test')
+            ->assertRedirect()
+            ->assertSessionHas('status', 'HTTP 403: API списка inbound вернул HTTP 403: доступ запрещён политикой панели.');
+
+        $this->assertSame('api_forbidden', $panel->fresh()->connection_diagnostic);
+        $this->assertSame(403, $panel->fresh()->connection_http_status);
+        $this->get('/admin')->assertSee('HTTP 403: API списка inbound вернул HTTP 403')
+            ->assertDontSee('panel-secret');
+    }
+
+    public function test_panel_api_html_is_reported_as_login_page_or_proxy_response(): void
+    {
+        $this->fakePanelHttp([
+            'https://panel.example.com/login' => Http::response(['success' => true]),
+            'https://panel.example.com/panel/api/inbounds/list' => Http::response(
+                '<html>private login page</html>',
+                200,
+                ['Content-Type' => 'text/html'],
+            ),
+        ]);
+        $admin = User::factory()->create(['is_admin' => true]);
+        $panel = $this->createPanel('Panel');
+
+        $this->actingAs($admin)->post('/admin/panels/'.$panel->id.'/connection-test')
+            ->assertRedirect()
+            ->assertSessionHas('status', 'HTTP 200: API списка inbound вернул HTML вместо JSON (возможно, сессию перенаправило на страницу входа).');
+
+        $this->assertSame('api_html', $panel->fresh()->connection_diagnostic);
+        $this->assertSame(200, $panel->fresh()->connection_http_status);
+        $this->get('/admin')->assertSee('HTTP 200: API списка inbound вернул HTML')
+            ->assertDontSee('private login page');
     }
 
     public function test_panel_connection_timeout_is_recorded_safely_as_offline(): void
     {
-        Http::fake([
+        $this->fakePanelHttp([
             'https://panel.example.com/login' => Http::failedConnection('private timeout details'),
         ]);
         $admin = User::factory()->create(['is_admin' => true]);
@@ -530,7 +729,7 @@ class SubscriptionFlowTest extends TestCase
     {
         $admin = User::factory()->create(['is_admin' => true]);
         $tlsPanel = $this->createPanel('Panel');
-        Http::fake([
+        $this->fakePanelHttp([
             'https://panel.example.com/login' => Http::failedConnection(
                 'cURL error 60: SSL certificate secret-path?token=private',
             ),
@@ -548,7 +747,7 @@ class SubscriptionFlowTest extends TestCase
     {
         $admin = User::factory()->create(['is_admin' => true]);
         $panel = $this->createPanel('Panel');
-        Http::fake([
+        $this->fakePanelHttp([
             'https://panel.example.com/login' => Http::failedConnection(
                 'cURL error 6: Could not resolve host private-panel.example',
             ),
@@ -565,7 +764,7 @@ class SubscriptionFlowTest extends TestCase
     {
         $admin = User::factory()->create(['is_admin' => true]);
         $panel = $this->createPanel('Panel');
-        Http::fake([
+        $this->fakePanelHttp([
             'https://panel.example.com/login' => Http::response(['success' => true]),
             'https://panel.example.com/panel/api/inbounds/list' => Http::response([
                 'success' => false,
@@ -575,7 +774,7 @@ class SubscriptionFlowTest extends TestCase
 
         $this->actingAs($admin)->post('/admin/panels/'.$panel->id.'/connection-test')
             ->assertRedirect()
-            ->assertSessionHas('status', 'Не найден API endpoint списка inbound. Проверьте base URL, reverse-proxy path и версию 3x-ui.');
+            ->assertSessionHas('status', 'HTTP 404: Не найден API endpoint списка inbound. Проверьте base URL, reverse-proxy path и версию 3x-ui.');
         $this->assertSame('api_endpoint_not_found', $panel->fresh()->connection_diagnostic);
         $this->get('/admin')->assertSee('Не найден API endpoint списка inbound')
             ->assertDontSee('version-specific private response');
@@ -585,7 +784,7 @@ class SubscriptionFlowTest extends TestCase
     {
         $admin = User::factory()->create(['is_admin' => true]);
         $panel = $this->createPanel('Panel');
-        Http::fake([
+        $this->fakePanelHttp([
             'https://panel.example.com/login' => Http::response(['success' => true]),
             'https://panel.example.com/panel/api/inbounds/list' => Http::response([
                 'success' => true,
@@ -594,8 +793,47 @@ class SubscriptionFlowTest extends TestCase
         ]);
         $this->actingAs($admin)->post('/admin/panels/'.$panel->id.'/connection-test')
             ->assertRedirect()
-            ->assertSessionHas('status', 'Вход в панель выполнен, но настроенный inbound ID не найден.');
+            ->assertSessionHas('status', 'HTTP 200: Вход в панель выполнен, но настроенный inbound ID не найден.');
         $this->assertSame('inbound_not_found', $panel->fresh()->connection_diagnostic);
+    }
+
+    public function test_panel_csrf_forbidden_is_reported_before_attempting_login(): void
+    {
+        $this->fakePanelHttp([
+            'https://panel.example.com/csrf-token' => Http::response(['success' => false], 403),
+        ]);
+        $admin = User::factory()->create(['is_admin' => true]);
+        $panel = $this->createPanel('Panel');
+
+        $this->actingAs($admin)->post('/admin/panels/'.$panel->id.'/connection-test')
+            ->assertRedirect()
+            ->assertSessionHas('status', 'HTTP 403: Endpoint CSRF вернул HTTP 403. Проверьте правила доступа reverse proxy.');
+
+        $this->assertSame('csrf_forbidden', $panel->fresh()->connection_diagnostic);
+        $this->assertSame(403, $panel->fresh()->connection_http_status);
+        Http::assertSentCount(1);
+        Http::assertNotSent(fn (ClientRequest $request) => str_ends_with($request->url(), '/login'));
+    }
+
+    public function test_panel_without_csrf_endpoint_uses_legacy_login_flow(): void
+    {
+        $this->fakePanelHttp([
+            'https://panel.example.com/csrf-token' => Http::response('', 404),
+            'https://panel.example.com/login' => Http::response(['success' => true]),
+            'https://panel.example.com/panel/api/inbounds/list' => Http::response([
+                'success' => true,
+                'obj' => [['id' => 1]],
+            ]),
+        ]);
+        $admin = User::factory()->create(['is_admin' => true]);
+        $panel = $this->createPanel('Panel');
+
+        $this->actingAs($admin)->post('/admin/panels/'.$panel->id.'/connection-test')
+            ->assertRedirect()
+            ->assertSessionHas('status', 'HTTP 200: Панель доступна: вход и read-only запрос списка inbound успешны.');
+
+        Http::assertSent(fn (ClientRequest $request) => str_ends_with($request->url(), '/login')
+            && ! $request->hasHeader('X-CSRF-Token'));
     }
 
     public function test_admin_can_create_a_secure_remote_panel(): void
@@ -615,6 +853,26 @@ class SubscriptionFlowTest extends TestCase
         $panel = Panel::query()->firstOrFail();
         $this->assertSame('panel-secret', $panel->password);
         $this->assertNotSame('panel-secret', DB::table('panels')->where('id', $panel->id)->value('password'));
+    }
+
+    public function test_admin_can_save_a_custom_panel_base_path(): void
+    {
+        $admin = User::factory()->create(['is_admin' => true]);
+
+        $this->actingAs($admin)->post('/admin/panels', [
+            'name' => 'Panel with base path',
+            'base_url' => 'https://panel.example.com/custom-prefix/',
+            'subscription_url_prefix' => 'https://vpn.example.com:2096/sub',
+            'username' => 'panel-admin',
+            'password' => 'panel-secret',
+            'inbound_id' => 1,
+            'protocol' => 'vless',
+        ])->assertRedirect();
+
+        $this->assertDatabaseHas('panels', [
+            'name' => 'Panel with base path',
+            'base_url' => 'https://panel.example.com/custom-prefix',
+        ]);
     }
 
     public function test_changing_panel_connection_settings_clears_the_previous_check_result(): void
@@ -640,6 +898,7 @@ class SubscriptionFlowTest extends TestCase
         $panel->refresh();
         $this->assertNull($panel->connection_status);
         $this->assertNull($panel->connection_diagnostic);
+        $this->assertNull($panel->connection_http_status);
         $this->assertNull($panel->connection_checked_at);
         $this->assertSame('replacement-secret', $panel->password);
     }
@@ -1088,7 +1347,7 @@ class SubscriptionFlowTest extends TestCase
 
     public function test_three_x_ui_client_uses_the_configured_inbound_and_client_limits(): void
     {
-        Http::fake([
+        $this->fakePanelHttp([
             'https://panel.example.com/login' => Http::response(['success' => true], 200, ['Set-Cookie' => '3x-ui=session; path=/']),
             'https://panel.example.com/panel/api/inbounds/list' => Http::response([
                 'success' => true,
@@ -1122,6 +1381,7 @@ class SubscriptionFlowTest extends TestCase
         app(ThreeXUiClient::class)->provision($panel, $subscription);
 
         Http::assertSent(fn (ClientRequest $request) => str_ends_with($request->url(), '/panel/api/inbounds/addClient')
+            && $request->hasHeader('X-CSRF-Token', 'test-csrf')
             && $request->data()['id'] === 1
             && data_get(json_decode($request->data()['settings'], true), 'clients.0.limitIp') === 3
             && data_get(json_decode($request->data()['settings'], true), 'clients.0.totalGB') === 100_000_000_000);
@@ -1141,9 +1401,20 @@ class SubscriptionFlowTest extends TestCase
         ]);
     }
 
-    private function createPanel(string $name): Panel
+    private function fakePanelHttp(array $responses): void
     {
-        return Panel::create([
+        Http::fake($responses + [
+            'https://panel.example.com/csrf-token' => Http::response(
+                ['success' => true, 'obj' => 'test-csrf'],
+                200,
+                ['Set-Cookie' => '3x-ui=session; Path=/; HttpOnly'],
+            ),
+        ]);
+    }
+
+    private function createPanel(string $name, array $attributes = []): Panel
+    {
+        return Panel::create(array_merge([
             'name' => $name,
             'base_url' => 'https://'.strtolower($name).'.example.com',
             'subscription_url_prefix' => 'https://vpn.example.com:2096/sub',
@@ -1151,7 +1422,7 @@ class SubscriptionFlowTest extends TestCase
             'password' => 'panel-secret',
             'inbound_id' => 1,
             'protocol' => 'vless',
-        ]);
+        ], $attributes));
     }
 
     private function createOrder(Tariff $tariff, User $user, string $status = 'pending'): Order

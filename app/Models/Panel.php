@@ -29,6 +29,7 @@ class Panel extends Model
         return (new PanelConnectionResult(
             $this->connection_status === 'online',
             $this->connection_diagnostic,
+            $this->connection_http_status,
         ))->message();
     }
 
