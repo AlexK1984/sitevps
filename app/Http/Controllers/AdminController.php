@@ -8,6 +8,7 @@ use App\Models\Panel;
 use App\Models\PaymentSettings;
 use App\Models\Tariff;
 use App\Models\User;
+use App\Services\ThreeXUiClient;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Validator;
@@ -208,9 +209,35 @@ class AdminController extends Controller
             ]);
         }
 
+        $connectionSettingsChanged = $validated['base_url'] !== $panel->base_url
+            || $validated['username'] !== $panel->username
+            || (int) $validated['inbound_id'] !== (int) $panel->inbound_id
+            || (($validated['password'] ?? null) !== null && $validated['password'] !== $panel->password);
+
         $panel->update($validated);
 
+        if ($connectionSettingsChanged) {
+            $panel->forceFill([
+                'connection_status' => null,
+                'connection_checked_at' => null,
+            ])->save();
+        }
+
         return back()->with('status', 'Панель обновлена.');
+    }
+
+    public function checkPanelConnection(Panel $panel, ThreeXUiClient $client): RedirectResponse
+    {
+        $online = $client->testConnection($panel);
+
+        $panel->forceFill([
+            'connection_status' => $online ? 'online' : 'offline',
+            'connection_checked_at' => now(),
+        ])->save();
+
+        return back()->with('status', $online
+            ? 'Проверка подключения завершена: панель доступна.'
+            : 'Проверка подключения завершена: панель недоступна или отклонила запрос.');
     }
 
     public function assignPanel(Request $request, User $user): RedirectResponse

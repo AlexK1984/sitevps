@@ -13,7 +13,10 @@ class Panel extends Model
 {
     protected function casts(): array
     {
-        return ['password' => 'encrypted'];
+        return [
+            'password' => 'encrypted',
+            'connection_checked_at' => 'datetime',
+        ];
     }
 
     public function users(): HasMany

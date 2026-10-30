@@ -478,6 +478,19 @@ a{
   background:#e3f6e9;
   color:#216b46
 }
+.status-offline{
+  background:#fde8e6;
+  color:#a83228
+}
+.panel-connection-status{
+  margin:12px 0;
+  color:var(--muted);
+  font-size:12px;
+  line-height:1.8
+}
+.panel-connection-status .status-pill{
+  margin-left:5px
+}
 .subscription-details{
   display:grid;
   grid-template-columns:repeat(2,1fr);

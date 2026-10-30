@@ -7,23 +7,48 @@ use App\Models\Panel;
 use App\Models\Subscription;
 use GuzzleHttp\Cookie\CookieJar;
 use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
 
 class ThreeXUiClient
 {
+    public function testConnection(Panel $panel): bool
+    {
+        $cookies = new CookieJar;
+        $baseUrl = rtrim($panel->base_url, '/');
+
+        try {
+            $login = $this->login($panel, $cookies);
+
+            if (! $login->successful() || $login->json('success') !== true) {
+                return false;
+            }
+
+            $inbounds = Http::withOptions(['cookies' => $cookies])
+                ->acceptJson()
+                ->timeout(15)
+                ->get($baseUrl.'/panel/api/inbounds/list');
+
+            $inboundList = $inbounds->json('obj');
+
+            if (! $inbounds->successful() || $inbounds->json('success') !== true || ! is_array($inboundList)) {
+                return false;
+            }
+
+            return collect($inboundList)
+                ->contains(fn ($item) => (int) data_get($item, 'id') === (int) $panel->inbound_id);
+        } catch (ConnectionException) {
+            return false;
+        }
+    }
+
     public function provision(Panel $panel, Subscription $subscription): void
     {
         $cookies = new CookieJar;
         $baseUrl = rtrim($panel->base_url, '/');
 
         try {
-            $login = Http::withOptions(['cookies' => $cookies])
-                ->asForm()
-                ->timeout(15)
-                ->post($baseUrl.'/login', [
-                    'username' => $panel->username,
-                    'password' => $panel->password,
-                ]);
+            $login = $this->login($panel, $cookies);
 
             if (! $login->successful()) {
                 throw new PanelApiException('Не удалось войти в панель 3x-ui.');
@@ -80,5 +105,16 @@ class ThreeXUiClient
         if (! $response->successful() || ! $response->json('success')) {
             throw new PanelApiException('Панель 3x-ui не приняла параметры подписки.');
         }
+    }
+
+    private function login(Panel $panel, CookieJar $cookies): Response
+    {
+        return Http::withOptions(['cookies' => $cookies])
+            ->asForm()
+            ->timeout(15)
+            ->post(rtrim($panel->base_url, '/').'/login', [
+                'username' => $panel->username,
+                'password' => $panel->password,
+            ]);
     }
 }

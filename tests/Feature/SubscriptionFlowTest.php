@@ -48,6 +48,8 @@ class SubscriptionFlowTest extends TestCase
     public function test_non_admin_cannot_open_admin_panel(): void
     {
         $this->actingAs(User::factory()->create())->get('/admin')->assertForbidden();
+        $panel = $this->createPanel('Panel');
+        $this->actingAs(User::factory()->create())->post('/admin/panels/'.$panel->id.'/connection-test')->assertForbidden();
         $this->actingAs(User::factory()->create())->put('/admin/payment-credentials', [
             'yookassa_shop_id' => 'not-authorized',
             'yookassa_secret_key' => 'not-authorized',
@@ -271,6 +273,106 @@ class SubscriptionFlowTest extends TestCase
         $this->assertSame('panel-secret', $panel->fresh()->password);
     }
 
+    public function test_admin_can_check_panel_connectivity_without_mutating_the_panel(): void
+    {
+        Http::fake([
+            'https://panel.example.com/login' => Http::response(['success' => true], 200, ['Set-Cookie' => '3x-ui=session; path=/']),
+            'https://panel.example.com/panel/api/inbounds/list' => Http::response([
+                'success' => true,
+                'obj' => [['id' => 1]],
+            ]),
+        ]);
+        $admin = User::factory()->create(['is_admin' => true]);
+        $panel = $this->createPanel('Panel');
+
+        $this->actingAs($admin)
+            ->post('/admin/panels/'.$panel->id.'/connection-test')
+            ->assertRedirect()
+            ->assertSessionHas('status', 'Проверка подключения завершена: панель доступна.');
+
+        $panel->refresh();
+        $this->assertSame('online', $panel->connection_status);
+        $this->assertNotNull($panel->connection_checked_at);
+
+        $this->get('/admin')
+            ->assertOk()
+            ->assertSee('Проверить подключение')
+            ->assertSee('Онлайн')
+            ->assertSee($panel->connection_checked_at->format('d.m.Y H:i:s'))
+            ->assertDontSee('panel-secret');
+
+        Http::assertSentCount(2);
+        Http::assertNotSent(fn (ClientRequest $request) => str_contains($request->url(), '/addClient')
+            || str_contains($request->url(), '/updateClient'));
+        Http::assertSent(fn (ClientRequest $request) => str_ends_with($request->url(), '/panel/api/inbounds/list')
+            && $request->method() === 'GET');
+    }
+
+    public function test_panel_api_errors_are_recorded_as_offline_without_exposing_response_details(): void
+    {
+        Http::fake([
+            'https://panel.example.com/login' => Http::response(['success' => true]),
+            'https://panel.example.com/panel/api/inbounds/list' => Http::response([
+                'success' => false,
+                'msg' => 'panel-secret private API details',
+            ], 503),
+        ]);
+        $admin = User::factory()->create(['is_admin' => true]);
+        $panel = $this->createPanel('Panel');
+
+        $this->actingAs($admin)->post('/admin/panels/'.$panel->id.'/connection-test')
+            ->assertRedirect()
+            ->assertSessionHas('status', 'Проверка подключения завершена: панель недоступна или отклонила запрос.');
+
+        $panel->refresh();
+        $this->assertSame('offline', $panel->connection_status);
+        $this->assertNotNull($panel->connection_checked_at);
+
+        $this->get('/admin')->assertSee('Офлайн')->assertDontSee('private API details')->assertDontSee('panel-secret');
+    }
+
+    public function test_panel_authentication_failure_is_recorded_as_offline_without_exposing_details(): void
+    {
+        Http::fake([
+            'https://panel.example.com/login' => Http::response([
+                'success' => false,
+                'msg' => 'invalid password panel-secret',
+            ]),
+        ]);
+        $admin = User::factory()->create(['is_admin' => true]);
+        $panel = $this->createPanel('Panel');
+
+        $this->actingAs($admin)->post('/admin/panels/'.$panel->id.'/connection-test')
+            ->assertRedirect()
+            ->assertSessionHas('status', 'Проверка подключения завершена: панель недоступна или отклонила запрос.');
+
+        $panel->refresh();
+        $this->assertSame('offline', $panel->connection_status);
+        $this->assertNotNull($panel->connection_checked_at);
+
+        $this->get('/admin')->assertSee('Офлайн')->assertDontSee('invalid password')->assertDontSee('panel-secret');
+        Http::assertSentCount(1);
+    }
+
+    public function test_panel_connection_timeout_is_recorded_safely_as_offline(): void
+    {
+        Http::fake([
+            'https://panel.example.com/login' => Http::failedConnection('private timeout details'),
+        ]);
+        $admin = User::factory()->create(['is_admin' => true]);
+        $panel = $this->createPanel('Panel');
+
+        $this->actingAs($admin)->post('/admin/panels/'.$panel->id.'/connection-test')
+            ->assertRedirect()
+            ->assertSessionHas('status', 'Проверка подключения завершена: панель недоступна или отклонила запрос.');
+
+        $panel->refresh();
+        $this->assertSame('offline', $panel->connection_status);
+        $this->assertNotNull($panel->connection_checked_at);
+
+        $this->get('/admin')->assertSee('Офлайн')->assertDontSee('private timeout details')->assertDontSee('panel-secret');
+    }
+
     public function test_admin_can_create_a_secure_remote_panel(): void
     {
         $admin = User::factory()->create(['is_admin' => true]);
@@ -288,6 +390,32 @@ class SubscriptionFlowTest extends TestCase
         $panel = Panel::query()->firstOrFail();
         $this->assertSame('panel-secret', $panel->password);
         $this->assertNotSame('panel-secret', DB::table('panels')->where('id', $panel->id)->value('password'));
+    }
+
+    public function test_changing_panel_connection_settings_clears_the_previous_check_result(): void
+    {
+        $admin = User::factory()->create(['is_admin' => true]);
+        $panel = $this->createPanel('Panel');
+        $panel->forceFill([
+            'connection_status' => 'online',
+            'connection_checked_at' => now(),
+        ])->save();
+
+        $this->actingAs($admin)->put('/admin/panels/'.$panel->id, [
+            'name' => $panel->name,
+            'base_url' => $panel->base_url,
+            'subscription_url_prefix' => $panel->subscription_url_prefix,
+            'username' => $panel->username,
+            'password' => 'replacement-secret',
+            'inbound_id' => $panel->inbound_id,
+            'protocol' => $panel->protocol,
+            'flow' => $panel->flow,
+        ])->assertRedirect();
+
+        $panel->refresh();
+        $this->assertNull($panel->connection_status);
+        $this->assertNull($panel->connection_checked_at);
+        $this->assertSame('replacement-secret', $panel->password);
     }
 
     public function test_admin_cannot_reassign_a_panel_for_an_active_subscription(): void

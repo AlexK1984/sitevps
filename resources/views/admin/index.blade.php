@@ -122,14 +122,27 @@
             @forelse($panels as $panel)
                 <form class="panel-card admin-form" method="post" action="{{ route('admin.panels.update', $panel) }}">
                     @csrf @method('PUT')<div class="card-heading"><h3>{{ $panel->name }}</h3><span class="status-pill">{{ $panel->protocol }}</span></div>
+                    <p class="panel-connection-status">
+                        Статус подключения:
+                        @if($panel->connection_status === 'online')
+                            <span class="status-pill status-active">Онлайн</span>
+                        @elseif($panel->connection_status === 'offline')
+                            <span class="status-pill status-offline">Офлайн</span>
+                        @else
+                            <span class="status-pill">Не проверялась</span>
+                        @endif
+                        <br><small>Последняя проверка: {{ $panel->connection_checked_at?->format('d.m.Y H:i:s') ?? 'нет' }}</small>
+                    </p>
                     <label>Название<input name="name" value="{{ $panel->name }}" required></label><label>HTTPS URL<input type="url" name="base_url" value="{{ $panel->base_url }}" required></label>
                     <label>Префикс ссылки подписки<input type="url" name="subscription_url_prefix" value="{{ $panel->subscription_url_prefix }}" placeholder="https://vpn.example.com:2096/sub" required></label>
                     <label>Логин<input name="username" value="{{ $panel->username }}" required></label><label>Новый пароль<input type="password" name="password" autocomplete="new-password" placeholder="Оставьте пустым без изменений"></label>
                     <label>ID inbound<input type="number" name="inbound_id" value="{{ $panel->inbound_id }}" min="1" required></label>
                     <div class="form-grid"><label>Протокол<select name="protocol">@foreach(['vless','vmess','trojan','shadowsocks'] as $protocol)<option value="{{ $protocol }}" @selected($panel->protocol === $protocol)>{{ $protocol }}</option>@endforeach</select></label><label>Flow<input name="flow" value="{{ $panel->flow }}"></label></div>
                     <button class="button button-outline button-full" type="submit">Сохранить</button>
+                    <button class="button button-outline button-full" type="submit" form="check-panel-{{ $panel->id }}">Проверить подключение</button>
                     <button class="button button-danger button-full" type="submit" form="delete-panel-{{ $panel->id }}">Удалить панель</button>
                 </form>
+                <form id="check-panel-{{ $panel->id }}" method="post" action="{{ route('admin.panels.connection-test', $panel) }}">@csrf</form>
                 <form id="delete-panel-{{ $panel->id }}" method="post" action="{{ route('admin.panels.delete', $panel) }}" onsubmit="return confirm('Удалить панель и очистить её назначения?')">@csrf @method('DELETE')</form>
             @empty<div class="empty-state">Панели ещё не добавлены.</div>@endforelse
         </div>

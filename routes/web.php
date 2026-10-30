@@ -38,6 +38,7 @@ Route::prefix('admin')
         Route::put('/tariffs/{tariff}', [AdminController::class, 'updateTariff'])->name('tariffs.update');
         Route::post('/panels', [AdminController::class, 'storePanel'])->name('panels.store');
         Route::put('/panels/{panel}', [AdminController::class, 'updatePanel'])->name('panels.update');
+        Route::post('/panels/{panel}/connection-test', [AdminController::class, 'checkPanelConnection'])->name('panels.connection-test');
         Route::delete('/panels/{panel}', [AdminController::class, 'deletePanel'])->name('panels.delete');
         Route::put('/users/{user}/panel', [AdminController::class, 'assignPanel'])->name('users.panel');
         Route::post('/orders/{order}/retry', [AdminController::class, 'retryProvisioning'])->name('orders.retry');
