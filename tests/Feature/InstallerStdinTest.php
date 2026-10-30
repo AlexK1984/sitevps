@@ -236,4 +236,62 @@ class InstallerStdinTest extends TestCase
         $this->assertNotFalse($configurePool);
         $this->assertLessThan($configurePool, $createAppUser);
     }
+
+    public function test_update_script_preserves_environment_and_database_without_creating_a_backup(): void
+    {
+        $updater = file_get_contents(base_path('scripts/update.sh'));
+        $readme = file_get_contents(base_path('README.md'));
+
+        $this->assertIsString($updater);
+        $this->assertIsString($readme);
+        $this->assertStringContainsString('git ls-remote "$REPOSITORY_URL" "refs/heads/$REPOSITORY_BRANCH"', $updater);
+        $this->assertStringContainsString('--exclude=\'/.env\'', $updater);
+        $this->assertStringContainsString('--exclude=\'/database/database.sqlite\'', $updater);
+        $this->assertStringContainsString('--exclude=\'/storage/\'', $updater);
+        $this->assertStringContainsString('--exclude=\'/vendor/\'', $updater);
+        $this->assertStringContainsString('DB_DATABASE=$DB_FILE', $updater);
+        $this->assertStringContainsString('APP_KEY=.+', $updater);
+        $this->assertStringContainsString('trap \'on_error "$?"\' ERR', $updater);
+        $this->assertStringContainsString('php "$APP_DIR/artisan" up', $updater);
+        $this->assertStringContainsString('composer install', $updater);
+        $this->assertStringContainsString('migrate --force --no-interaction', $updater);
+        $this->assertStringContainsString('optimize:clear', $updater);
+        $this->assertStringContainsString('systemctl restart php8.3-fpm', $updater);
+        $this->assertStringContainsString('systemctl restart vpnsite-worker', $updater);
+        $this->assertStringNotContainsString('sqlite3 "$DB_FILE"', $updater);
+        $this->assertStringNotContainsString('BACKUP', $updater);
+        $this->assertStringNotContainsString('key:generate', $updater);
+        $this->assertStringContainsString('curl -fsSL https://raw.githubusercontent.com/AlexK1984/sitevps/alexk1984-vpn-subscriptions-site/scripts/update.sh | sudo bash', $readme);
+        $this->assertStringContainsString('Автоматического отката нет', $readme);
+
+        $environmentCheck = strpos($updater, 'DB_DATABASE=$DB_FILE');
+        $releaseCheck = strpos($updater, 'git ls-remote "$REPOSITORY_URL" "refs/heads/$REPOSITORY_BRANCH"');
+        $maintenanceMode = strpos($updater, 'php "$APP_DIR/artisan" down --retry=60');
+        $codeUpdate = strpos($updater, 'rsync -a --chown=root:www-data');
+        $dependencyInstall = strpos($updater, 'composer install');
+        $migrations = strpos($updater, 'migrate --force --no-interaction');
+        $serviceRestart = strpos($updater, 'systemctl restart php8.3-fpm', $migrations);
+        $maintenanceOff = strpos($updater, 'php "$APP_DIR/artisan" up', $serviceRestart);
+
+        foreach ([
+            $environmentCheck,
+            $releaseCheck,
+            $maintenanceMode,
+            $codeUpdate,
+            $dependencyInstall,
+            $migrations,
+            $serviceRestart,
+            $maintenanceOff,
+        ] as $position) {
+            $this->assertNotFalse($position);
+        }
+
+        $this->assertLessThan($releaseCheck, $environmentCheck);
+        $this->assertLessThan($maintenanceMode, $releaseCheck);
+        $this->assertLessThan($codeUpdate, $maintenanceMode);
+        $this->assertLessThan($dependencyInstall, $codeUpdate);
+        $this->assertLessThan($migrations, $dependencyInstall);
+        $this->assertLessThan($serviceRestart, $migrations);
+        $this->assertLessThan($maintenanceOff, $serviceRestart);
+    }
 }
