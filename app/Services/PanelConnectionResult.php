@@ -35,6 +35,7 @@ class PanelConnectionResult
             'server_error' => 'Панель вернула внутреннюю HTTP-ошибку. Проверьте состояние панели и её reverse proxy.',
             'http_error' => 'Панель вернула неожиданный HTTP-статус. Проверьте настройки доступа и reverse proxy.',
             'inbound_not_found' => 'Вход в панель выполнен, но настроенный inbound ID не найден.',
+            'supported_inbounds_not_found' => 'Вход выполнен, но не найдены активные inbound VLESS, VMess, Trojan или Shadowsocks для выдачи.',
             'csrf_redirect' => 'Endpoint CSRF перенаправил запрос. Проверьте base URL и reverse-proxy path.',
             'csrf_unauthorized' => 'Endpoint CSRF вернул HTTP 401. Проверьте доступ к панели и base URL.',
             'csrf_forbidden' => 'Endpoint CSRF вернул HTTP 403. Проверьте правила доступа reverse proxy.',

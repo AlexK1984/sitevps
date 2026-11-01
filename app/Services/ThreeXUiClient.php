@@ -113,10 +113,11 @@ class ThreeXUiClient
             return new PanelConnectionResult(false, 'api_malformed', $inbounds->status());
         }
 
-        $hasInbound = collect($inboundsPayload['obj'])
-            ->contains(fn ($item) => (int) data_get($item, 'id') === (int) $panel->inbound_id);
+        $inboundIds = $this->configuredInboundIds($panel, $inboundsPayload['obj']);
+        $hasInbound = $inboundIds !== [];
+        $missingDiagnostic = $panel->all_inbounds ? 'supported_inbounds_not_found' : 'inbound_not_found';
 
-        return new PanelConnectionResult($hasInbound, $hasInbound ? 'ok' : 'inbound_not_found', $inbounds->status());
+        return new PanelConnectionResult($hasInbound, $hasInbound ? 'ok' : $missingDiagnostic, $inbounds->status());
     }
 
     private function isHtmlResponse(Response $response): bool
@@ -200,19 +201,24 @@ class ThreeXUiClient
         if (! is_array($inboundsPayload['obj'] ?? null)) {
             throw new PanelApiException('Панель 3x-ui вернула некорректный список inbound.');
         }
-        $inbound = collect($inboundsPayload['obj'] ?? [])
-            ->first(fn ($item) => (int) data_get($item, 'id') === (int) $panel->inbound_id);
-
-        if (! is_array($inbound)) {
-            throw new PanelApiException('Настроенный inbound не найден в панели 3x-ui.');
+        $inboundIds = $this->configuredInboundIds($panel, $inboundsPayload['obj']);
+        if ($inboundIds === []) {
+            $diagnostic = $panel->all_inbounds
+                ? 'Не найдены активные inbound VLESS, VMess, Trojan или Shadowsocks для выдачи.'
+                : 'Настроенный inbound не найден в панели 3x-ui.';
+            throw new PanelApiException($diagnostic);
         }
 
-        $inboundSettings = data_get($inbound, 'settings');
-        if (is_string($inboundSettings)) {
-            $inboundSettings = json_decode($inboundSettings, true);
-        }
-        if (! is_array($inboundSettings) || ! is_array($inboundSettings['clients'] ?? null)) {
-            throw new PanelApiException('Панель 3x-ui вернула некорректные настройки выбранного inbound.');
+        foreach ($inboundIds as $inboundId) {
+            $inbound = collect($inboundsPayload['obj'])
+                ->first(fn ($item) => (int) data_get($item, 'id') === $inboundId);
+            $inboundSettings = data_get($inbound, 'settings');
+            if (is_string($inboundSettings)) {
+                $inboundSettings = json_decode($inboundSettings, true);
+            }
+            if (! is_array($inboundSettings) || ! is_array($inboundSettings['clients'] ?? null)) {
+                throw new PanelApiException('Панель 3x-ui вернула некорректные настройки одного из выбранных inbound.');
+            }
         }
 
         $client = [
@@ -241,13 +247,36 @@ class ThreeXUiClient
                 ->timeout(15)
                 ->post($baseUrl.'/panel/api/clients/add', [
                     'client' => $client,
-                    'inboundIds' => [(int) $panel->inbound_id],
+                    'inboundIds' => $inboundIds,
                 ]);
         } catch (ConnectionException $exception) {
             throw $this->connectionFailure($exception, 'создать или обновить клиента');
         }
 
         $this->successfulApiResponse($response, 'создать или обновить клиента');
+    }
+
+    private function configuredInboundIds(Panel $panel, array $inbounds): array
+    {
+        if (! $panel->all_inbounds) {
+            return collect($inbounds)
+                ->filter(fn ($inbound) => (int) data_get($inbound, 'id') === (int) $panel->inbound_id)
+                ->map(fn ($inbound) => (int) data_get($inbound, 'id'))
+                ->values()
+                ->all();
+        }
+
+        $supportedProtocols = ['vless', 'vmess', 'trojan', 'shadowsocks'];
+
+        return collect($inbounds)
+            ->filter(fn ($inbound) => is_array($inbound)
+                && (int) data_get($inbound, 'id') > 0
+                && data_get($inbound, 'enable') === true
+                && in_array(strtolower((string) data_get($inbound, 'protocol')), $supportedProtocols, true))
+            ->map(fn ($inbound) => (int) data_get($inbound, 'id'))
+            ->unique()
+            ->values()
+            ->all();
     }
 
     private function successfulApiResponse(Response $response, string $stage): array

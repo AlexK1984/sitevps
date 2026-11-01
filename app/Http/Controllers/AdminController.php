@@ -244,9 +244,11 @@ class AdminController extends Controller
             'inbound_id' => ['required', 'integer', 'min:1'],
             'protocol' => ['required', 'in:vless,vmess,trojan,shadowsocks'],
             'flow' => ['nullable', 'string', 'max:120'],
+            'all_inbounds' => ['sometimes', 'boolean'],
         ]);
 
         $validated['base_url'] = rtrim($validated['base_url'], '/');
+        $validated['all_inbounds'] = $request->boolean('all_inbounds');
         Panel::create($validated);
 
         return back()->with('status', 'Панель добавлена.');
@@ -263,9 +265,11 @@ class AdminController extends Controller
             'inbound_id' => ['required', 'integer', 'min:1'],
             'protocol' => ['required', 'in:vless,vmess,trojan,shadowsocks'],
             'flow' => ['nullable', 'string', 'max:120'],
+            'all_inbounds' => ['sometimes', 'boolean'],
         ]);
 
         $validated['base_url'] = rtrim($validated['base_url'], '/');
+        $validated['all_inbounds'] = $request->boolean('all_inbounds');
 
         if (blank($validated['password'] ?? null)) {
             unset($validated['password']);
@@ -274,15 +278,17 @@ class AdminController extends Controller
         if ($panel->subscriptions()->exists()
             && ($validated['base_url'] !== $panel->base_url
                 || (int) $validated['inbound_id'] !== (int) $panel->inbound_id
-                || $validated['protocol'] !== $panel->protocol)) {
+                || $validated['protocol'] !== $panel->protocol
+                || $validated['all_inbounds'] !== (bool) $panel->all_inbounds)) {
             return back()->withErrors([
-                'panel' => 'Нельзя менять сервер или inbound панели с активными подписками. Перенесите клиентов отдельно.',
+                'panel' => 'Нельзя менять сервер или набор inbound панели с подписками. Перенесите клиентов отдельно.',
             ]);
         }
 
         $connectionSettingsChanged = $validated['base_url'] !== $panel->base_url
             || $validated['username'] !== $panel->username
             || (int) $validated['inbound_id'] !== (int) $panel->inbound_id
+            || $validated['all_inbounds'] !== (bool) $panel->all_inbounds
             || (($validated['password'] ?? null) !== null && $validated['password'] !== $panel->password);
 
         $panel->update($validated);
