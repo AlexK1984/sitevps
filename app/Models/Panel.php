@@ -8,7 +8,7 @@ use Illuminate\Database\Eloquent\Attributes\Hidden;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
-#[Fillable(['name', 'base_url', 'subscription_url_prefix', 'username', 'password', 'inbound_id', 'protocol', 'flow', 'all_inbounds'])]
+#[Fillable(['name', 'base_url', 'subscription_url_prefix', 'username', 'password', 'flow'])]
 #[Hidden(['password'])]
 class Panel extends Model
 {
@@ -17,7 +17,6 @@ class Panel extends Model
         return [
             'password' => 'encrypted',
             'connection_checked_at' => 'datetime',
-            'all_inbounds' => 'boolean',
         ];
     }
 

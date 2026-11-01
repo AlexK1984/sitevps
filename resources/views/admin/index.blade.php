@@ -149,16 +149,14 @@
             <label>Название<input name="name" required></label><label>HTTPS URL<input type="url" name="base_url" placeholder="https://panel.example.com" required></label>
             <label>Префикс ссылки подписки<input type="url" name="subscription_url_prefix" placeholder="https://vpn.example.com:2096/sub" required></label>
             <label>Логин<input name="username" required autocomplete="off"></label><label>Пароль<input type="password" name="password" required autocomplete="new-password"></label>
-            <label>Основной ID inbound<input type="number" name="inbound_id" min="1" required></label>
-            <div class="form-grid"><label>Протокол<select name="protocol"><option>vless</option><option>vmess</option><option>trojan</option><option>shadowsocks</option></select></label><label>Flow<input name="flow" placeholder="(если требуется)"></label></div>
-            <input type="hidden" name="all_inbounds" value="0">
-            <label class="checkbox"><input type="checkbox" name="all_inbounds" value="1"> Выдавать во все привязанные активные inbound VLESS, VMess, Trojan и Shadowsocks</label>
+            <p class="muted">Приложение автоматически найдёт все активные inbound VLESS, VMess, Trojan и Shadowsocks и включит их в подписку пользователя.</p>
+            <label>Flow для поддерживающих его подключений<input name="flow" placeholder="(если требуется)"></label>
             <button class="button button-full" type="submit">Добавить панель</button>
         </form>
         <div class="admin-list">
             @forelse($panels as $panel)
                 <form class="panel-card admin-form" method="post" action="{{ route('admin.panels.update', $panel) }}">
-                    @csrf @method('PUT')<div class="card-heading"><h3>{{ $panel->name }}</h3><span class="status-pill">{{ $panel->protocol }}</span></div>
+                    @csrf @method('PUT')<div class="card-heading"><h3>{{ $panel->name }}</h3><span class="status-pill">Автовыбор inbound</span></div>
                     <p class="panel-connection-status">
                         Статус подключения:
                         @if($panel->connection_status === 'online')
@@ -176,10 +174,8 @@
                     <label>Название<input name="name" value="{{ $panel->name }}" required></label><label>HTTPS URL<input type="url" name="base_url" value="{{ $panel->base_url }}" required></label>
                     <label>Префикс ссылки подписки<input type="url" name="subscription_url_prefix" value="{{ $panel->subscription_url_prefix }}" placeholder="https://vpn.example.com:2096/sub" required></label>
                     <label>Логин<input name="username" value="{{ $panel->username }}" required></label><label>Новый пароль<input type="password" name="password" autocomplete="new-password" placeholder="Оставьте пустым без изменений"></label>
-                    <label>Основной ID inbound<input type="number" name="inbound_id" value="{{ $panel->inbound_id }}" min="1" required></label>
-                    <div class="form-grid"><label>Протокол<select name="protocol">@foreach(['vless','vmess','trojan','shadowsocks'] as $protocol)<option value="{{ $protocol }}" @selected($panel->protocol === $protocol)>{{ $protocol }}</option>@endforeach</select></label><label>Flow<input name="flow" value="{{ $panel->flow }}"></label></div>
-                    <input type="hidden" name="all_inbounds" value="0">
-                    <label class="checkbox"><input type="checkbox" name="all_inbounds" value="1" @checked($panel->all_inbounds)> Выдавать во все привязанные активные inbound VLESS, VMess, Trojan и Shadowsocks</label>
+                    <p class="muted">В подписку включаются все активные inbound VLESS, VMess, Trojan и Shadowsocks.</p>
+                    <label>Flow для поддерживающих его подключений<input name="flow" value="{{ $panel->flow }}"></label>
                     <button class="button button-outline button-full" type="submit">Сохранить</button>
                     <button class="button button-outline button-full" type="submit" form="check-panel-{{ $panel->id }}">Проверить подключение</button>
                     <button class="button button-danger button-full" type="submit" form="delete-panel-{{ $panel->id }}">Удалить панель</button>

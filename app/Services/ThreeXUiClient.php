@@ -113,11 +113,14 @@ class ThreeXUiClient
             return new PanelConnectionResult(false, 'api_malformed', $inbounds->status());
         }
 
-        $inboundIds = $this->configuredInboundIds($panel, $inboundsPayload['obj']);
+        $inboundIds = $this->supportedInboundIds($inboundsPayload['obj']);
         $hasInbound = $inboundIds !== [];
-        $missingDiagnostic = $panel->all_inbounds ? 'supported_inbounds_not_found' : 'inbound_not_found';
 
-        return new PanelConnectionResult($hasInbound, $hasInbound ? 'ok' : $missingDiagnostic, $inbounds->status());
+        return new PanelConnectionResult(
+            $hasInbound,
+            $hasInbound ? 'ok' : 'supported_inbounds_not_found',
+            $inbounds->status(),
+        );
     }
 
     private function isHtmlResponse(Response $response): bool
@@ -201,12 +204,9 @@ class ThreeXUiClient
         if (! is_array($inboundsPayload['obj'] ?? null)) {
             throw new PanelApiException('Панель 3x-ui вернула некорректный список inbound.');
         }
-        $inboundIds = $this->configuredInboundIds($panel, $inboundsPayload['obj']);
+        $inboundIds = $this->supportedInboundIds($inboundsPayload['obj']);
         if ($inboundIds === []) {
-            $diagnostic = $panel->all_inbounds
-                ? 'Не найдены активные inbound VLESS, VMess, Trojan или Shadowsocks для выдачи.'
-                : 'Настроенный inbound не найден в панели 3x-ui.';
-            throw new PanelApiException($diagnostic);
+            throw new PanelApiException('Не найдены активные inbound VLESS, VMess, Trojan или Shadowsocks для выдачи.');
         }
 
         foreach ($inboundIds as $inboundId) {
@@ -256,16 +256,8 @@ class ThreeXUiClient
         $this->successfulApiResponse($response, 'создать или обновить клиента');
     }
 
-    private function configuredInboundIds(Panel $panel, array $inbounds): array
+    private function supportedInboundIds(array $inbounds): array
     {
-        if (! $panel->all_inbounds) {
-            return collect($inbounds)
-                ->filter(fn ($inbound) => (int) data_get($inbound, 'id') === (int) $panel->inbound_id)
-                ->map(fn ($inbound) => (int) data_get($inbound, 'id'))
-                ->values()
-                ->all();
-        }
-
         $supportedProtocols = ['vless', 'vmess', 'trojan', 'shadowsocks'];
 
         return collect($inbounds)

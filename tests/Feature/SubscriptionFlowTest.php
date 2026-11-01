@@ -387,16 +387,16 @@ class SubscriptionFlowTest extends TestCase
             'subscription_url_prefix' => 'https://vpn.example.com:2096/sub',
             'username' => 'admin',
             'password' => 'panel-secret',
-            'inbound_id' => 1,
-            'protocol' => 'vless',
         ]);
 
         $this->actingAs($admin)->get('/admin')
             ->assertOk()
-            ->assertSee('Выдавать во все привязанные активные inbound')
+            ->assertSee('автоматически найдёт все активные inbound')
+            ->assertDontSee('Основной ID inbound')
             ->assertDontSee('panel-secret');
 
         $this->assertSame('panel-secret', $panel->fresh()->password);
+        $this->assertNull($panel->fresh()->inbound_id);
     }
 
     public function test_admin_can_check_panel_connectivity_without_mutating_the_panel(): void
@@ -405,7 +405,7 @@ class SubscriptionFlowTest extends TestCase
             'https://panel.example.com/login' => Http::response(['success' => true], 200, ['Set-Cookie' => '3x-ui=session; path=/']),
             'https://panel.example.com/panel/api/inbounds/list' => Http::response([
                 'success' => true,
-                'obj' => [['id' => 1]],
+                'obj' => [['id' => 1, 'protocol' => 'vless', 'enable' => true]],
             ]),
         ]);
         $admin = User::factory()->create(['is_admin' => true]);
@@ -444,7 +444,7 @@ class SubscriptionFlowTest extends TestCase
             && ! str_ends_with($request->url(), '/login'));
     }
 
-    public function test_panel_connection_check_accepts_any_supported_inbound_in_all_mode(): void
+    public function test_panel_connection_check_accepts_any_supported_inbound_automatically(): void
     {
         $this->fakePanelHttp([
             'https://panel.example.com/login' => Http::response(['success' => true]),
@@ -454,10 +454,11 @@ class SubscriptionFlowTest extends TestCase
                     ['id' => 1, 'protocol' => 'wireguard', 'enable' => true],
                     ['id' => 2, 'protocol' => 'trojan', 'enable' => true],
                     ['id' => 3, 'protocol' => 'vless', 'enable' => false],
+                    ['id' => 4, 'protocol' => 'vmess', 'enable' => true],
                 ],
             ]),
         ]);
-        $panel = $this->createPanel('Panel', ['all_inbounds' => true]);
+        $panel = $this->createPanel('Panel');
 
         $result = app(ThreeXUiClient::class)->testConnection($panel);
 
@@ -625,7 +626,7 @@ class SubscriptionFlowTest extends TestCase
             ),
             'https://panel.example.com/secret-panel/panel/api/inbounds/list' => Http::response([
                 'success' => true,
-                'obj' => [['id' => 1]],
+                'obj' => [['id' => 1, 'protocol' => 'vless', 'enable' => true]],
             ]),
         ]);
         $admin = User::factory()->create(['is_admin' => true]);
@@ -811,13 +812,13 @@ class SubscriptionFlowTest extends TestCase
             'https://panel.example.com/login' => Http::response(['success' => true]),
             'https://panel.example.com/panel/api/inbounds/list' => Http::response([
                 'success' => true,
-                'obj' => [['id' => 999]],
+                'obj' => [['id' => 999, 'protocol' => 'wireguard', 'enable' => true]],
             ]),
         ]);
         $this->actingAs($admin)->post('/admin/panels/'.$panel->id.'/connection-test')
             ->assertRedirect()
-            ->assertSessionHas('status', 'HTTP 200: Вход в панель выполнен, но настроенный inbound ID не найден.');
-        $this->assertSame('inbound_not_found', $panel->fresh()->connection_diagnostic);
+            ->assertSessionHas('status', 'HTTP 200: Вход выполнен, но не найдены активные inbound VLESS, VMess, Trojan или Shadowsocks для выдачи.');
+        $this->assertSame('supported_inbounds_not_found', $panel->fresh()->connection_diagnostic);
     }
 
     public function test_panel_csrf_forbidden_is_reported_before_attempting_login(): void
@@ -845,7 +846,7 @@ class SubscriptionFlowTest extends TestCase
             'https://panel.example.com/login' => Http::response(['success' => true]),
             'https://panel.example.com/panel/api/inbounds/list' => Http::response([
                 'success' => true,
-                'obj' => [['id' => 1]],
+                'obj' => [['id' => 1, 'protocol' => 'vless', 'enable' => true]],
             ]),
         ]);
         $admin = User::factory()->create(['is_admin' => true]);
@@ -859,7 +860,7 @@ class SubscriptionFlowTest extends TestCase
             && ! $request->hasHeader('X-CSRF-Token'));
     }
 
-    public function test_admin_can_create_a_secure_remote_panel(): void
+    public function test_admin_can_create_a_secure_remote_panel_without_inbound_configuration(): void
     {
         $admin = User::factory()->create(['is_admin' => true]);
 
@@ -869,32 +870,12 @@ class SubscriptionFlowTest extends TestCase
             'subscription_url_prefix' => 'https://vpn.example.com:2096/sub',
             'username' => 'panel-admin',
             'password' => 'panel-secret',
-            'inbound_id' => 1,
-            'protocol' => 'vless',
         ])->assertRedirect();
 
         $panel = Panel::query()->firstOrFail();
         $this->assertSame('panel-secret', $panel->password);
-        $this->assertFalse($panel->all_inbounds);
+        $this->assertNull($panel->inbound_id);
         $this->assertNotSame('panel-secret', DB::table('panels')->where('id', $panel->id)->value('password'));
-    }
-
-    public function test_admin_can_enable_all_supported_inbounds_for_a_panel(): void
-    {
-        $admin = User::factory()->create(['is_admin' => true]);
-
-        $this->actingAs($admin)->post('/admin/panels', [
-            'name' => 'All inbound panel',
-            'base_url' => 'https://panel.example.com',
-            'subscription_url_prefix' => 'https://vpn.example.com:2096/sub',
-            'username' => 'panel-admin',
-            'password' => 'panel-secret',
-            'inbound_id' => 1,
-            'protocol' => 'vless',
-            'all_inbounds' => '1',
-        ])->assertRedirect();
-
-        $this->assertTrue(Panel::query()->firstOrFail()->all_inbounds);
     }
 
     public function test_admin_can_save_a_custom_panel_base_path(): void
@@ -907,8 +888,6 @@ class SubscriptionFlowTest extends TestCase
             'subscription_url_prefix' => 'https://vpn.example.com:2096/sub',
             'username' => 'panel-admin',
             'password' => 'panel-secret',
-            'inbound_id' => 1,
-            'protocol' => 'vless',
         ])->assertRedirect();
 
         $this->assertDatabaseHas('panels', [
@@ -932,8 +911,6 @@ class SubscriptionFlowTest extends TestCase
             'subscription_url_prefix' => $panel->subscription_url_prefix,
             'username' => $panel->username,
             'password' => 'replacement-secret',
-            'inbound_id' => $panel->inbound_id,
-            'protocol' => $panel->protocol,
             'flow' => $panel->flow,
         ])->assertRedirect();
 
@@ -970,7 +947,7 @@ class SubscriptionFlowTest extends TestCase
         $this->assertDatabaseHas('users', ['id' => $user->id, 'assigned_panel_id' => $firstPanel->id]);
     }
 
-    public function test_admin_can_enable_all_inbounds_for_a_panel_with_existing_subscriptions(): void
+    public function test_admin_can_update_panel_without_inbound_settings_when_subscriptions_exist(): void
     {
         $admin = User::factory()->create(['is_admin' => true]);
         $panel = $this->createPanel('Panel');
@@ -993,13 +970,10 @@ class SubscriptionFlowTest extends TestCase
             'subscription_url_prefix' => $panel->subscription_url_prefix,
             'username' => $panel->username,
             'password' => '',
-            'inbound_id' => $panel->inbound_id,
-            'protocol' => $panel->protocol,
             'flow' => $panel->flow,
-            'all_inbounds' => '1',
         ])->assertRedirect()->assertSessionHasNoErrors();
 
-        $this->assertTrue($panel->fresh()->all_inbounds);
+        $this->assertNull($panel->fresh()->inbound_id);
     }
 
     public function test_checkout_creates_a_yookassa_payment_with_an_idempotency_key(): void
@@ -1124,8 +1098,6 @@ class SubscriptionFlowTest extends TestCase
             'subscription_url_prefix' => 'https://vpn.example.com:2096/sub',
             'username' => 'admin',
             'password' => 'panel-secret',
-            'inbound_id' => 1,
-            'protocol' => 'vless',
         ]);
         $user->update(['assigned_panel_id' => $panel->id]);
         $tariff = $this->createTariff();
@@ -1420,13 +1392,13 @@ class SubscriptionFlowTest extends TestCase
     }
 
     #[DataProvider('threeXUiInboundSettingsProvider')]
-    public function test_three_x_ui_client_uses_the_configured_inbound_and_client_limits(array|string $settings): void
+    public function test_three_x_ui_client_auto_discovers_inbounds_and_preserves_client_limits(array|string $settings): void
     {
         $this->fakePanelHttp([
             'https://panel.example.com/login' => Http::response(['success' => true], 200, ['Set-Cookie' => '3x-ui=session; path=/']),
             'https://panel.example.com/panel/api/inbounds/list' => Http::response([
                 'success' => true,
-                'obj' => [['id' => 1, 'settings' => $settings]],
+                'obj' => [['id' => 1, 'protocol' => 'vless', 'enable' => true, 'settings' => $settings]],
             ]),
             'https://panel.example.com/panel/api/clients/add' => Http::response(['success' => true]),
         ]);
@@ -1437,8 +1409,6 @@ class SubscriptionFlowTest extends TestCase
             'subscription_url_prefix' => 'https://vpn.example.com:2096/sub',
             'username' => 'admin',
             'password' => 'panel-secret',
-            'inbound_id' => 1,
-            'protocol' => 'vless',
         ]);
         $user = User::factory()->create();
         $subscription = Subscription::create([
@@ -1478,7 +1448,7 @@ class SubscriptionFlowTest extends TestCase
             || str_contains($request->url(), '/inbounds/updateClient/'));
     }
 
-    public function test_three_x_ui_client_provisions_into_every_enabled_supported_inbound(): void
+    public function test_three_x_ui_client_auto_provisions_into_every_enabled_supported_inbound(): void
     {
         $inbounds = [
             ['id' => 1, 'protocol' => 'vless', 'enable' => true, 'settings' => ['clients' => []]],
@@ -1497,7 +1467,7 @@ class SubscriptionFlowTest extends TestCase
             ]),
             'https://panel.example.com/panel/api/clients/add' => Http::response(['success' => true]),
         ]);
-        $panel = $this->createPanel('Panel', ['all_inbounds' => true]);
+        $panel = $this->createPanel('Panel');
         $user = User::factory()->create();
         $subscription = Subscription::create([
             'user_id' => $user->id,
@@ -1520,6 +1490,65 @@ class SubscriptionFlowTest extends TestCase
             && data_get($request->data(), 'client.subId') === $subscription->sub_id);
     }
 
+    public function test_three_x_ui_client_does_not_report_success_without_supported_active_inbounds(): void
+    {
+        $this->fakePanelHttp([
+            'https://panel.example.com/login' => Http::response(['success' => true]),
+            'https://panel.example.com/panel/api/inbounds/list' => Http::response([
+                'success' => true,
+                'obj' => [
+                    ['id' => 1, 'protocol' => 'wireguard', 'enable' => true, 'settings' => ['clients' => []]],
+                    ['id' => 2, 'protocol' => 'vless', 'enable' => false, 'settings' => ['clients' => []]],
+                ],
+            ]),
+        ]);
+        $panel = $this->createPanel('Panel');
+        $user = User::factory()->create();
+        $subscription = Subscription::create([
+            'user_id' => $user->id,
+            'panel_id' => $panel->id,
+            'client_uuid' => (string) Str::uuid(),
+            'sub_id' => 'NoSupportedInbound',
+            'client_email' => 'unsupported@sitevps',
+            'expires_at' => now()->addDays(30),
+            'traffic_limit_bytes' => 100_000_000_000,
+            'connection_limit' => 3,
+            'status' => 'provisioning',
+        ]);
+
+        try {
+            app(ThreeXUiClient::class)->provision($panel, $subscription);
+            $this->fail('Provisioning must fail when no supported active inbound exists.');
+        } catch (PanelApiException $exception) {
+            $this->assertStringContainsString('Не найдены активные inbound', $exception->getMessage());
+        }
+
+        Http::assertNotSent(fn (ClientRequest $request) => str_ends_with($request->url(), '/panel/api/clients/add'));
+    }
+
+    public function test_dashboard_shows_one_subscription_link_with_shared_subscription_id(): void
+    {
+        $panel = $this->createPanel('Panel');
+        $user = User::factory()->create(['assigned_panel_id' => $panel->id]);
+        $subscriptionId = 'SharedSubscriptionForAllInbound';
+        Subscription::create([
+            'user_id' => $user->id,
+            'panel_id' => $panel->id,
+            'client_uuid' => (string) Str::uuid(),
+            'sub_id' => $subscriptionId,
+            'client_email' => 'all-inbounds@sitevps',
+            'expires_at' => now()->addDays(30),
+            'traffic_limit_bytes' => 100_000_000_000,
+            'connection_limit' => 3,
+            'status' => 'active',
+        ]);
+
+        $this->actingAs($user)->get('/dashboard')
+            ->assertOk()
+            ->assertSee('https://vpn.example.com:2096/sub/'.$subscriptionId)
+            ->assertSee('Открыть конфигурацию подключения');
+    }
+
     public static function threeXUiInboundSettingsProvider(): array
     {
         return [
@@ -1539,7 +1568,12 @@ class SubscriptionFlowTest extends TestCase
             'https://panel.example.com/path-for-test/login' => Http::response(['success' => true]),
             'https://panel.example.com/path-for-test/panel/api/inbounds/list' => Http::response([
                 'success' => true,
-                'obj' => [['id' => 1, 'settings' => ['clients' => []]]],
+                'obj' => [[
+                    'id' => 1,
+                    'protocol' => 'vless',
+                    'enable' => true,
+                    'settings' => ['clients' => []],
+                ]],
             ]),
             'https://panel.example.com/path-for-test/panel/api/clients/add' => Http::response('not found', 404, ['Content-Type' => 'text/plain']),
         ]);
@@ -1550,8 +1584,6 @@ class SubscriptionFlowTest extends TestCase
             'subscription_url_prefix' => 'https://vpn.example.com:2096/sub',
             'username' => 'admin',
             'password' => 'panel-secret',
-            'inbound_id' => 1,
-            'protocol' => 'vless',
         ]);
         $user = User::factory()->create();
         $subscription = Subscription::create([
@@ -1610,8 +1642,6 @@ class SubscriptionFlowTest extends TestCase
             'subscription_url_prefix' => 'https://vpn.example.com:2096/sub',
             'username' => 'admin',
             'password' => 'panel-secret',
-            'inbound_id' => 1,
-            'protocol' => 'vless',
         ], $attributes));
     }
 
