@@ -278,10 +278,9 @@ class AdminController extends Controller
         if ($panel->subscriptions()->exists()
             && ($validated['base_url'] !== $panel->base_url
                 || (int) $validated['inbound_id'] !== (int) $panel->inbound_id
-                || $validated['protocol'] !== $panel->protocol
-                || $validated['all_inbounds'] !== (bool) $panel->all_inbounds)) {
+                || $validated['protocol'] !== $panel->protocol)) {
             return back()->withErrors([
-                'panel' => 'Нельзя менять сервер или набор inbound панели с подписками. Перенесите клиентов отдельно.',
+                'panel' => 'Нельзя менять сервер или основной inbound панели с подписками. Перенесите клиентов отдельно.',
             ]);
         }
 

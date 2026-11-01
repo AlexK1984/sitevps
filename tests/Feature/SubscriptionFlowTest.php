@@ -970,7 +970,7 @@ class SubscriptionFlowTest extends TestCase
         $this->assertDatabaseHas('users', ['id' => $user->id, 'assigned_panel_id' => $firstPanel->id]);
     }
 
-    public function test_admin_cannot_change_inbound_mode_after_a_subscription_exists(): void
+    public function test_admin_can_enable_all_inbounds_for_a_panel_with_existing_subscriptions(): void
     {
         $admin = User::factory()->create(['is_admin' => true]);
         $panel = $this->createPanel('Panel');
@@ -997,9 +997,9 @@ class SubscriptionFlowTest extends TestCase
             'protocol' => $panel->protocol,
             'flow' => $panel->flow,
             'all_inbounds' => '1',
-        ])->assertSessionHasErrors('panel');
+        ])->assertRedirect()->assertSessionHasNoErrors();
 
-        $this->assertFalse($panel->fresh()->all_inbounds);
+        $this->assertTrue($panel->fresh()->all_inbounds);
     }
 
     public function test_checkout_creates_a_yookassa_payment_with_an_idempotency_key(): void
