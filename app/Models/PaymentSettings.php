@@ -10,16 +10,31 @@ use Illuminate\Database\Eloquent\Model;
     'yookassa_enabled',
     'telegram_stars_enabled',
     'internal_test_payments_enabled',
-    'crypto_asset',
-    'crypto_network',
-    'crypto_confirmations',
-    'crypto_payment_ttl_minutes',
-    'crypto_admin_notes',
     'yookassa_shop_id',
     'yookassa_secret_key',
     'telegram_bot_token',
+    'smtp_enabled',
+    'smtp_host',
+    'smtp_port',
+    'smtp_encryption',
+    'smtp_username',
+    'smtp_password',
+    'smtp_from_address',
+    'smtp_from_name',
+    'nowpayments_api_key',
+    'nowpayments_ipn_secret',
+    'nowpayments_enabled',
+    'nowpayments_rub_verified',
 ])]
-#[Hidden(['yookassa_shop_id', 'yookassa_secret_key', 'telegram_bot_token'])]
+#[Hidden([
+    'yookassa_shop_id',
+    'yookassa_secret_key',
+    'telegram_bot_token',
+    'smtp_username',
+    'smtp_password',
+    'nowpayments_api_key',
+    'nowpayments_ipn_secret',
+])]
 class PaymentSettings extends Model
 {
     protected function casts(): array
@@ -31,6 +46,14 @@ class PaymentSettings extends Model
             'yookassa_shop_id' => 'encrypted',
             'yookassa_secret_key' => 'encrypted',
             'telegram_bot_token' => 'encrypted',
+            'smtp_enabled' => 'boolean',
+            'smtp_port' => 'integer',
+            'smtp_username' => 'encrypted',
+            'smtp_password' => 'encrypted',
+            'nowpayments_api_key' => 'encrypted',
+            'nowpayments_ipn_secret' => 'encrypted',
+            'nowpayments_enabled' => 'boolean',
+            'nowpayments_rub_verified' => 'boolean',
         ];
     }
 
@@ -71,5 +94,28 @@ class PaymentSettings extends Model
     public function telegramConfiguredInAdmin(): bool
     {
         return filled($this->telegram_bot_token);
+    }
+
+    public function smtpConfiguredInAdmin(): bool
+    {
+        return $this->smtp_enabled
+            && filled($this->smtp_host)
+            && filled($this->smtp_port)
+            && filled($this->smtp_from_address);
+    }
+
+    public function smtpPasswordConfiguredInAdmin(): bool
+    {
+        return filled($this->smtp_password);
+    }
+
+    public function smtpUsernameConfiguredInAdmin(): bool
+    {
+        return filled($this->smtp_username);
+    }
+
+    public function nowpaymentsConfiguredInAdmin(): bool
+    {
+        return filled($this->nowpayments_api_key) && filled($this->nowpayments_ipn_secret);
     }
 }

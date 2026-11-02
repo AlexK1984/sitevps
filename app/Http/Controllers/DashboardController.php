@@ -6,6 +6,7 @@ use App\Models\PaymentSettings;
 use App\Models\SiteContent;
 use App\Models\Tariff;
 use App\Models\TelegramLinkToken;
+use App\Services\NowPaymentsClient;
 use App\Services\YooKassaClient;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -14,9 +15,13 @@ use Illuminate\View\View;
 
 class DashboardController extends Controller
 {
-    public function index(Request $request, YooKassaClient $yooKassa): View
-    {
+    public function index(
+        Request $request,
+        YooKassaClient $yooKassa,
+        NowPaymentsClient $nowPayments,
+    ): View {
         $user = $request->user();
+        $paymentSettings = PaymentSettings::current();
 
         return view('dashboard', [
             'user' => $user,
@@ -25,7 +30,10 @@ class DashboardController extends Controller
             'subscription' => $user->subscription()->with(['panel', 'tariff'])->first(),
             'orders' => $user->orders()->with('tariff')->latest()->limit(10)->get(),
             'telegramBotName' => config('services.telegram.bot_name'),
-            'yookassaAvailable' => PaymentSettings::current()->yookassa_enabled && $yooKassa->configured(),
+            'yookassaAvailable' => $paymentSettings->yookassa_enabled && $yooKassa->configured(),
+            'nowPaymentsAvailable' => $paymentSettings->nowpayments_enabled
+                && $paymentSettings->nowpayments_rub_verified
+                && $nowPayments->configured(),
         ]);
     }
 

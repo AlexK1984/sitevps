@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Models\PaymentSettings;
 use App\Models\User;
 use App\Notifications\PasswordResetNotification;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -199,6 +200,34 @@ class AuthenticationRecoveryTest extends TestCase
             ->assertSessionHas('status', 'Если аккаунт с таким адресом существует и почта настроена, мы отправили ссылку для сброса пароля.');
 
         $this->assertDatabaseCount('password_reset_tokens', 0);
+    }
+
+    public function test_password_reset_uses_smtp_settings_from_admin_panel(): void
+    {
+        Notification::fake();
+        PaymentSettings::current()->update([
+            'smtp_enabled' => true,
+            'smtp_host' => 'smtp.admin.example.test',
+            'smtp_port' => 587,
+            'smtp_encryption' => 'tls',
+            'smtp_username' => 'private-login',
+            'smtp_password' => 'private-password',
+            'smtp_from_address' => 'reset@example.test',
+            'smtp_from_name' => 'VPN service',
+        ]);
+        $user = User::factory()->create(['email' => 'override@example.test']);
+
+        $this->post(route('password.email'), ['email' => $user->email])
+            ->assertRedirect()
+            ->assertSessionHas('status');
+
+        Notification::assertSentTo($user, PasswordResetNotification::class);
+        $this->assertSame('smtp', config('mail.default'));
+        $this->assertSame('smtp.admin.example.test', config('mail.mailers.smtp.host'));
+        $this->assertSame(587, config('mail.mailers.smtp.port'));
+        $this->assertSame('smtp', config('mail.mailers.smtp.scheme'));
+        $this->assertSame('reset@example.test', config('mail.from.address'));
+        $this->assertSame('private-password', config('mail.mailers.smtp.password'));
     }
 
     private function getCaptcha(string $path, int $elapsedSeconds = 3): array

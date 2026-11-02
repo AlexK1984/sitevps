@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\SiteContent;
 use App\Models\User;
+use App\Services\RuntimeMailSettings;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -46,7 +47,7 @@ class PasswordResetController extends Controller
 
         $email = $validator->validated()['email'];
 
-        if ($this->mailDeliveryConfigured()) {
+        if (app(RuntimeMailSettings::class)->configure()) {
             try {
                 Password::sendResetLink(['email' => $email]);
             } catch (TransportExceptionInterface $exception) {
@@ -96,16 +97,6 @@ class PasswordResetController extends Controller
         return back()->withErrors([
             'email' => 'Ссылка для сброса пароля недействительна или устарела. Запросите новую ссылку.',
         ])->withInput($this->safeOldInput($request));
-    }
-
-    private function mailDeliveryConfigured(): bool
-    {
-        $mailer = config('mail.default');
-        $transport = config("mail.mailers.{$mailer}.transport");
-        $allowedTransports = ['smtp', 'sendmail', 'mailgun', 'ses', 'ses-v2', 'postmark', 'resend'];
-
-        return in_array($transport, $allowedTransports, true)
-            && filter_var(config('mail.from.address'), FILTER_VALIDATE_EMAIL) !== false;
     }
 
     private function normalizeEmail(Request $request): void

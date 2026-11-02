@@ -15,6 +15,7 @@
     <a href="#panels">Панели 3x-ui</a>
     <a href="#orders">Заказы</a>
     <a href="#payment-settings">Оплаты</a>
+    <a href="#mail-settings">Почта</a>
     <a href="#payment-events">Платёжные события</a>
     <a href="#admin-audit">Аудит изменений</a>
 </nav>
@@ -36,6 +37,9 @@
             <input type="hidden" name="internal_test_payments_enabled" value="0">
             <label class="checkbox"><input type="checkbox" name="internal_test_payments_enabled" value="1" @checked($paymentSettings->internal_test_payments_enabled)> Разрешить внутреннюю тестовую оплату</label>
             <p class="notice">ВНИМАНИЕ: тестовая симуляция не обращается к ЮKassa или Telegram и не списывает деньги, но создаёт оплаченный заказ и выдаёт/продлевает реальный доступ на назначенной панели. Тестовые заказы будут помечены «TEST».</p>
+            <input type="hidden" name="nowpayments_enabled" value="0">
+            <label class="checkbox"><input type="checkbox" name="nowpayments_enabled" value="1" @checked($paymentSettings->nowpayments_enabled)> Разрешить оплату через NOWPayments</label>
+            <p class="muted">Включение доступно только после сохранения реквизитов и проверки поддержки RUB через API NOWPayments.</p>
             <button class="button button-full" type="submit">Сохранить способы оплаты</button>
         </form>
         <form class="panel-card admin-form" method="post" action="{{ route('admin.payment-credentials.update') }}" autocomplete="off">
@@ -70,21 +74,86 @@
             <p class="fine-print">Значения шифруются ключом APP_KEY в базе. Секрет webhook Telegram по-прежнему задаётся только на сервере в .env. Секретные поля не сохраняются при ошибке проверки формы.</p>
             <button class="button button-full" type="submit">Сохранить учётные данные</button>
         </form>
-        <form class="panel-card admin-form" method="post" action="{{ route('admin.payment-settings.update') }}">
+        <div class="panel-card admin-form">
+            <h3>Настройки криптооплаты</h3>
+            <p class="notice">Заказ создаётся как hosted invoice в RUB; покупатель выбирает доступную монету на странице NOWPayments. Сеть, курс и срок оплаты определяются провайдером. Сайт выдаёт доступ только после подтверждения статуса finished через подписанный IPN и дополнительную проверку платежа по API.</p>
+        </div>
+    </div>
+    <form class="panel-card admin-form" method="post" action="{{ route('admin.payment-settings.nowpayments-rub-check') }}">
+        @csrf
+        <button class="button button-outline button-full" type="submit">Проверить поддержку RUB через NOWPayments</button>
+    </form>
+    <form class="panel-card admin-form" method="post" action="{{ route('admin.payment-credentials.update') }}" autocomplete="off">
+        @csrf @method('PUT')
+        <h3>NOWPayments</h3>
+        <p class="muted">
+            @if($paymentSettings->nowpayments_configured_in_admin)
+                API key и IPN secret сохранены в админ-панели
+            @else
+                API key и/или IPN secret не заданы
+            @endif
+        </p>
+        <p class="muted">
+            Поддержка RUB:
+            @if($paymentSettings->nowpayments_rub_verified)
+                подтверждена API
+            @else
+                ещё не проверена
+            @endif
+        </p>
+        <label>API key<input type="password" name="nowpayments_api_key" maxlength="500" autocomplete="new-password" placeholder="Оставьте пустым, чтобы не менять"></label>
+        <label>IPN secret<input type="password" name="nowpayments_ipn_secret" maxlength="500" autocomplete="new-password" placeholder="Оставьте пустым, чтобы не менять"></label>
+        <label class="checkbox"><input type="checkbox" name="clear_nowpayments" value="1"> Удалить сохранённые реквизиты NOWPayments</label>
+        <p class="fine-print">Оба значения шифруются ключом APP_KEY и не выводятся повторно. При смене реквизитов оплату потребуется проверить и включить заново. IPN URL: <code>{{ route('webhooks.nowpayments', absolute: true) }}</code></p>
+        <button class="button button-full" type="submit">Сохранить реквизиты NOWPayments</button>
+    </form>
+</section>
+
+<section class="admin-section" id="mail-settings">
+    <div class="section-heading"><div><span class="eyebrow">ПОЧТА И ВОССТАНОВЛЕНИЕ ДОСТУПА</span><h2>Настройки SMTP</h2></div></div>
+    <div class="admin-grid">
+        <form class="panel-card admin-form" method="post" action="{{ route('admin.mail-settings.update') }}" autocomplete="off">
             @csrf @method('PUT')
-            <input type="hidden" name="yookassa_enabled" value="{{ $paymentSettings->yookassa_enabled ? '1' : '0' }}">
-            <input type="hidden" name="telegram_stars_enabled" value="{{ $paymentSettings->telegram_stars_enabled ? '1' : '0' }}">
-            <input type="hidden" name="internal_test_payments_enabled" value="{{ $paymentSettings->internal_test_payments_enabled ? '1' : '0' }}">
-            <h3>Подготовка криптооплаты</h3>
-            <p class="notice">Криптооплата отключена: провайдер и API ещё не выбраны. Эти общие параметры сохраняются для последующей интеграции и не создают платёжные адреса или подтверждения.</p>
-            <label>Актив / валюта<input name="crypto_asset" value="{{ $paymentSettings->crypto_asset }}" placeholder="Например, USDT" maxlength="20"></label>
-            <label>Сеть<input name="crypto_network" value="{{ $paymentSettings->crypto_network }}" placeholder="Например, сеть токена" maxlength="80"></label>
+            <h3>Подключение почты</h3>
+            <input type="hidden" name="smtp_enabled" value="0">
+            <label class="checkbox"><input type="checkbox" name="smtp_enabled" value="1" @checked($paymentSettings->smtp_enabled)> Использовать SMTP из админ-панели вместо серверного .env</label>
             <div class="form-grid">
-                <label>Требуемые подтверждения<input type="number" name="crypto_confirmations" value="{{ $paymentSettings->crypto_confirmations }}" min="1" max="1000"></label>
-                <label>Время на оплату, минут<input type="number" name="crypto_payment_ttl_minutes" value="{{ $paymentSettings->crypto_payment_ttl_minutes }}" min="1" max="1440"></label>
+                <label>SMTP host<input name="smtp_host" value="{{ $paymentSettings->smtp_host }}" maxlength="255" autocomplete="off"></label>
+                <label>Порт<input type="number" name="smtp_port" value="{{ $paymentSettings->smtp_port }}" min="1" max="65535"></label>
+                <label>Шифрование
+                    <select name="smtp_encryption">
+                        <option value="tls" @selected($paymentSettings->smtp_encryption === 'tls')>STARTTLS</option>
+                        <option value="ssl" @selected($paymentSettings->smtp_encryption === 'ssl')>SSL/TLS</option>
+                    </select>
+                </label>
+                <label>Адрес отправителя<input type="email" name="smtp_from_address" value="{{ $paymentSettings->smtp_from_address }}" maxlength="255" autocomplete="off"></label>
             </div>
-            <label>Внутренняя заметка<textarea name="crypto_admin_notes" rows="3" maxlength="2000">{{ $paymentSettings->crypto_admin_notes }}</textarea></label>
-            <button class="button button-outline button-full" type="submit">Сохранить подготовительные настройки</button>
+            <label>Имя отправителя<input name="smtp_from_name" value="{{ $paymentSettings->smtp_from_name }}" maxlength="255" autocomplete="off"></label>
+            <label>SMTP логин
+                <input type="password" name="smtp_username" maxlength="255" autocomplete="new-password" placeholder="{{ $paymentSettings->smtp_username_configured_in_admin ? 'Логин сохранён; оставьте пустым, чтобы не менять' : 'Необязательно' }}">
+            </label>
+            <label class="checkbox"><input type="checkbox" name="clear_smtp_username" value="1"> Удалить сохранённый SMTP логин</label>
+            <label>SMTP пароль
+                <input type="password" name="smtp_password" maxlength="1000" autocomplete="new-password" placeholder="{{ $paymentSettings->smtp_password_configured_in_admin ? 'Пароль сохранён; оставьте пустым, чтобы не менять' : 'Необязательно' }}">
+            </label>
+            <label class="checkbox"><input type="checkbox" name="clear_smtp_password" value="1"> Удалить сохранённый SMTP пароль</label>
+            <p class="fine-print">
+                @if($paymentSettings->smtp_configured_in_admin)
+                    Активно подключение из админ-панели.
+                @elseif($paymentSettings->smtp_enabled)
+                    SMTP override включён, но настроен не полностью; отправка блокируется, чтобы не использовать скрытую резервную конфигурацию.
+                @else
+                    Используется конфигурация почты сервера из .env; SMTP override не включён.
+                @endif
+                Логин и пароль шифруются ключом APP_KEY, после сохранения в браузер не возвращаются. Изменения применяются при следующей отправке; APP_KEY и настройки сервера не меняются.
+            </p>
+            <button class="button button-full" type="submit">Сохранить настройки SMTP</button>
+        </form>
+        <form class="panel-card admin-form" method="post" action="{{ route('admin.mail-settings.test') }}">
+            @csrf
+            <h3>Проверка отправки</h3>
+            <p class="muted">Тестовое письмо будет отправлено только на адрес вашей учётной записи администратора: {{ auth()->user()->email }}.</p>
+            <button class="button button-outline button-full" type="submit">Отправить тестовое письмо</button>
         </form>
     </div>
 </section>
@@ -241,6 +310,7 @@
                 <select name="event_provider" onchange="this.form.submit()">
                     <option value="">Все методы</option>
                     <option value="yookassa" @selected($eventProvider === 'yookassa')>ЮKassa</option>
+                    <option value="nowpayments" @selected($eventProvider === 'nowpayments')>NOWPayments</option>
                     <option value="telegram_stars" @selected($eventProvider === 'telegram_stars')>Telegram Stars</option>
                     <option value="internal_test" @selected($eventProvider === 'internal_test')>Внутренний тест</option>
                 </select>

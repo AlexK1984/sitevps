@@ -11,8 +11,10 @@ use App\Models\Subscription;
 use App\Models\Tariff;
 use App\Models\TelegramLinkToken;
 use App\Models\User;
+use App\Notifications\SmtpTestNotification;
 use App\Services\CheckoutService;
 use App\Services\InternalTestPaymentService;
+use App\Services\RuntimeMailSettings;
 use App\Services\TelegramBotClient;
 use App\Services\ThreeXUiClient;
 use App\Services\YooKassaClient;
@@ -21,6 +23,7 @@ use Illuminate\Http\Client\Request as ClientRequest;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
 use Mockery;
@@ -88,6 +91,14 @@ class SubscriptionFlowTest extends TestCase
             'yookassa_shop_id' => 'not-authorized',
             'yookassa_secret_key' => 'not-authorized',
             'telegram_bot_token' => 'not-authorized',
+            'nowpayments_api_key' => 'not-authorized',
+        ])->assertForbidden();
+        $this->actingAs(User::factory()->create())->put('/admin/mail-settings', [
+            'smtp_enabled' => '1',
+            'smtp_host' => 'smtp.example.test',
+            'smtp_port' => '587',
+            'smtp_encryption' => 'tls',
+            'smtp_from_address' => 'no-reply@example.test',
         ])->assertForbidden();
     }
 
@@ -113,7 +124,7 @@ class SubscriptionFlowTest extends TestCase
         ]);
     }
 
-    public function test_admin_can_configure_stars_and_provider_neutral_crypto_preferences(): void
+    public function test_admin_crypto_settings_use_hosted_ruble_invoice_without_fake_provider_options(): void
     {
         $admin = User::factory()->create(['is_admin' => true]);
         config(['services.telegram.bot_token' => 'browser-must-not-see-this']);
@@ -121,32 +132,232 @@ class SubscriptionFlowTest extends TestCase
         $this->actingAs($admin)->get('/admin')
             ->assertOk()
             ->assertSee('Настройки оплат')
-            ->assertSee('Криптооплата отключена')
+            ->assertSee('hosted invoice в RUB')
+            ->assertSee('Проверить поддержку RUB через NOWPayments')
             ->assertDontSee('browser-must-not-see-this');
 
         $this->actingAs($admin)->put('/admin/payment-settings', [
             'yookassa_enabled' => '1',
             'telegram_stars_enabled' => '1',
-            'crypto_asset' => 'USDT',
-            'crypto_network' => 'TRC20',
-            'crypto_confirmations' => 12,
-            'crypto_payment_ttl_minutes' => 30,
-            'crypto_admin_notes' => 'Choose provider before launch.',
         ])->assertRedirect();
 
         $this->assertDatabaseHas('payment_settings', [
             'id' => 1,
             'telegram_stars_enabled' => true,
-            'crypto_asset' => 'USDT',
-            'crypto_network' => 'TRC20',
-            'crypto_confirmations' => 12,
-            'crypto_payment_ttl_minutes' => 30,
-            'crypto_admin_notes' => 'Choose provider before launch.',
+            'nowpayments_enabled' => false,
+            'nowpayments_rub_verified' => false,
         ]);
         $this->assertDatabaseHas('payment_settings', [
             'id' => 1,
             'internal_test_payments_enabled' => false,
         ]);
+    }
+
+    public function test_nowpayments_rub_must_be_verified_before_checkout_can_be_enabled(): void
+    {
+        Http::fake([
+            'https://api.nowpayments.io/v1/min-amount*' => Http::response(['min_amount' => 0.01], 200),
+        ]);
+        $admin = User::factory()->create(['is_admin' => true]);
+        $settings = PaymentSettings::current();
+        $settings->update([
+            'nowpayments_api_key' => 'private-api-key',
+            'nowpayments_ipn_secret' => 'private-ipn-secret',
+        ]);
+
+        $this->actingAs($admin)->put('/admin/payment-settings', [
+            'yookassa_enabled' => '1',
+            'telegram_stars_enabled' => '0',
+            'nowpayments_enabled' => '1',
+        ])->assertSessionHasErrors('nowpayments_enabled');
+
+        $this->actingAs($admin)->post('/admin/payment-settings/nowpayments-rub-check')
+            ->assertRedirect()
+            ->assertSessionHas('status');
+        $this->assertTrue($settings->fresh()->nowpayments_rub_verified);
+        Http::assertSent(fn (ClientRequest $request): bool => $request->url() === 'https://api.nowpayments.io/v1/min-amount?currency_from=rub'
+            && $request->hasHeader('x-api-key', 'private-api-key'));
+
+        $this->actingAs($admin)->put('/admin/payment-settings', [
+            'yookassa_enabled' => '1',
+            'telegram_stars_enabled' => '0',
+            'nowpayments_enabled' => '1',
+        ])->assertRedirect();
+        $this->assertTrue($settings->fresh()->nowpayments_enabled);
+
+        $this->actingAs($admin)->put('/admin/payment-credentials', [
+            'nowpayments_api_key' => 'rotated-api-key',
+        ])->assertRedirect();
+        $this->assertFalse($settings->fresh()->nowpayments_enabled);
+        $this->assertFalse($settings->fresh()->nowpayments_rub_verified);
+    }
+
+    public function test_nowpayments_checkout_creates_ruble_invoice_and_persists_provider_url(): void
+    {
+        Queue::fake();
+        Http::fake([
+            'https://api.nowpayments.io/v1/invoice' => Http::response([
+                'id' => 'invoice-123',
+                'invoice_url' => 'https://nowpayments.io/payment/?iid=invoice-123',
+            ], 201),
+        ]);
+        PaymentSettings::current()->update([
+            'nowpayments_api_key' => 'private-api-key',
+            'nowpayments_ipn_secret' => 'private-ipn-secret',
+            'nowpayments_enabled' => true,
+            'nowpayments_rub_verified' => true,
+        ]);
+        $user = User::factory()->create();
+        $tariff = $this->createTariff();
+
+        $this->actingAs($user)->post(route('checkout.nowpayments', $tariff))
+            ->assertRedirect('https://nowpayments.io/payment/?iid=invoice-123');
+
+        $order = Order::query()->where('user_id', $user->id)->firstOrFail();
+        $this->assertSame('nowpayments', $order->payment_method);
+        $this->assertSame('RUB', $order->payment_currency);
+        $this->assertSame('invoice-123', $order->nowpayments_invoice_id);
+        $this->assertSame('https://nowpayments.io/payment/?iid=invoice-123', $order->payment_url);
+        Http::assertSent(fn (ClientRequest $request): bool => $request->url() === 'https://api.nowpayments.io/v1/invoice'
+            && $request['price_currency'] === 'rub'
+            && $request['price_amount'] === 12.99
+            && $request['order_id'] === $order->reference
+            && $request['ipn_callback_url'] === route('webhooks.nowpayments', absolute: true));
+    }
+
+    public function test_nowpayments_webhook_requires_signature_and_verified_finished_payment_and_is_idempotent(): void
+    {
+        Queue::fake();
+        $secret = 'private-ipn-secret';
+        PaymentSettings::current()->update([
+            'nowpayments_api_key' => 'private-api-key',
+            'nowpayments_ipn_secret' => $secret,
+        ]);
+        $user = User::factory()->create();
+        $tariff = $this->createTariff();
+        $order = $this->createOrder($tariff, $user);
+        $order->update([
+            'payment_id' => null,
+            'payment_method' => 'nowpayments',
+            'nowpayments_invoice_id' => 'invoice-123',
+        ]);
+
+        $notification = [
+            'order_id' => $order->reference,
+            'payment_id' => 123456,
+            'payment_status' => 'finished',
+        ];
+        $canonical = $notification;
+        ksort($canonical);
+        $body = json_encode($notification, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
+        $signature = hash_hmac(
+            'sha512',
+            json_encode($canonical, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR),
+            $secret,
+        );
+
+        $this->call('POST', '/webhooks/nowpayments', [], [], [], [
+            'CONTENT_TYPE' => 'application/json',
+            'HTTP_X_NOWPAYMENTS_SIG' => str_repeat('0', 128),
+        ], $body)->assertUnauthorized();
+        Http::assertNothingSent();
+
+        Http::fake([
+            'https://api.nowpayments.io/v1/payment/123456' => Http::response([
+                'payment_id' => 123456,
+                'invoice_id' => 'invoice-123',
+                'order_id' => $order->reference,
+                'payment_status' => 'finished',
+                'price_amount' => '12.99',
+                'price_currency' => 'RUB',
+            ], 200),
+        ]);
+
+        $sendWebhook = fn () => $this->call('POST', '/webhooks/nowpayments', [], [], [], [
+            'CONTENT_TYPE' => 'application/json',
+            'HTTP_X_NOWPAYMENTS_SIG' => $signature,
+        ], $body);
+        $sendWebhook()->assertOk();
+        $sendWebhook()->assertOk();
+
+        $this->assertDatabaseHas('orders', [
+            'id' => $order->id,
+            'payment_id' => '123456',
+            'status' => 'paid_unassigned',
+        ]);
+        Queue::assertPushed(ProvisionSubscription::class, 1);
+        $this->assertDatabaseHas('payment_events', [
+            'order_id' => $order->id,
+            'provider' => 'nowpayments',
+            'event_type' => 'webhook_verified',
+        ]);
+    }
+
+    public function test_nowpayments_nonfinished_payment_and_mismatched_amount_never_mark_order_paid(): void
+    {
+        $secret = 'private-ipn-secret';
+        PaymentSettings::current()->update([
+            'nowpayments_api_key' => 'private-api-key',
+            'nowpayments_ipn_secret' => $secret,
+        ]);
+        $user = User::factory()->create();
+        $tariff = $this->createTariff();
+        $order = $this->createOrder($tariff, $user);
+        $order->update([
+            'payment_id' => null,
+            'payment_method' => 'nowpayments',
+            'nowpayments_invoice_id' => 'invoice-123',
+        ]);
+        $notification = [
+            'order_id' => $order->reference,
+            'payment_id' => 123456,
+            'payment_status' => 'partially_paid',
+        ];
+        $canonical = $notification;
+        ksort($canonical);
+        $body = json_encode($notification, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
+        $signature = hash_hmac(
+            'sha512',
+            json_encode($canonical, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR),
+            $secret,
+        );
+        Http::fake([
+            'https://api.nowpayments.io/v1/payment/123456' => Http::sequence()
+                ->push([
+                    'payment_id' => 123456,
+                    'invoice_id' => 'invoice-123',
+                    'order_id' => $order->reference,
+                    'payment_status' => 'partially_paid',
+                    'price_amount' => '12.99',
+                    'price_currency' => 'rub',
+                ], 200)
+                ->push([
+                    'payment_id' => 123456,
+                    'invoice_id' => 'invoice-123',
+                    'order_id' => $order->reference,
+                    'payment_status' => 'finished',
+                    'price_amount' => '13.00',
+                    'price_currency' => 'rub',
+                ], 200)
+                ->push([
+                    'payment_id' => 123456,
+                    'invoice_id' => 'invoice-123',
+                    'order_id' => $order->reference,
+                    'payment_status' => 'expired',
+                    'price_amount' => '12.99',
+                    'price_currency' => 'rub',
+                ], 200),
+        ]);
+        $sendWebhook = fn () => $this->call('POST', '/webhooks/nowpayments', [], [], [], [
+            'CONTENT_TYPE' => 'application/json',
+            'HTTP_X_NOWPAYMENTS_SIG' => $signature,
+        ], $body);
+
+        $sendWebhook()->assertOk();
+        $sendWebhook()->assertUnprocessable();
+        $sendWebhook()->assertOk();
+        $this->assertNull($order->fresh()->paid_at);
+        $this->assertSame('payment_failed', $order->fresh()->status);
     }
 
     public function test_internal_test_payments_are_disabled_by_default_and_admin_only(): void
@@ -281,6 +492,8 @@ class SubscriptionFlowTest extends TestCase
             'yookassa_shop_id' => 'private-shop-id',
             'yookassa_secret_key' => 'private-yookassa-key',
             'telegram_bot_token' => 'private-telegram-token',
+            'nowpayments_api_key' => 'private-nowpayments-api-key',
+            'nowpayments_ipn_secret' => 'private-nowpayments-ipn-secret',
         ])->assertRedirect();
 
         $settings = PaymentSettings::current();
@@ -288,20 +501,125 @@ class SubscriptionFlowTest extends TestCase
         $this->assertSame('private-shop-id', $settings->yookassa_shop_id);
         $this->assertSame('private-yookassa-key', $settings->yookassa_secret_key);
         $this->assertSame('private-telegram-token', $settings->telegram_bot_token);
+        $this->assertSame('private-nowpayments-api-key', $settings->nowpayments_api_key);
+        $this->assertSame('private-nowpayments-ipn-secret', $settings->nowpayments_ipn_secret);
         $this->assertNotSame('private-shop-id', $raw->yookassa_shop_id);
         $this->assertNotSame('private-yookassa-key', $raw->yookassa_secret_key);
         $this->assertNotSame('private-telegram-token', $raw->telegram_bot_token);
+        $this->assertNotSame('private-nowpayments-api-key', $raw->nowpayments_api_key);
+        $this->assertNotSame('private-nowpayments-ipn-secret', $raw->nowpayments_ipn_secret);
         $this->assertArrayNotHasKey('yookassa_shop_id', $settings->toArray());
         $this->assertArrayNotHasKey('yookassa_secret_key', $settings->toArray());
         $this->assertArrayNotHasKey('telegram_bot_token', $settings->toArray());
+        $this->assertArrayNotHasKey('nowpayments_api_key', $settings->toArray());
+        $this->assertArrayNotHasKey('nowpayments_ipn_secret', $settings->toArray());
 
         $this->get('/admin')
             ->assertOk()
             ->assertDontSee('private-shop-id')
             ->assertDontSee('private-yookassa-key')
             ->assertDontSee('private-telegram-token')
+            ->assertDontSee('private-nowpayments-api-key')
+            ->assertDontSee('private-nowpayments-ipn-secret')
             ->assertSee('настроена в админ-панели')
-            ->assertSee('токен задан в админ-панели');
+            ->assertSee('токен задан в админ-панели')
+            ->assertSee('API key и IPN secret сохранены в админ-панели');
+    }
+
+    public function test_admin_can_save_smtp_settings_encrypted_and_send_a_test_only_to_self(): void
+    {
+        Notification::fake();
+        $admin = User::factory()->create([
+            'is_admin' => true,
+            'email' => 'admin@example.test',
+        ]);
+
+        $this->actingAs($admin)->put('/admin/mail-settings', [
+            'smtp_enabled' => '1',
+            'smtp_host' => 'mail.example.test',
+            'smtp_port' => '465',
+            'smtp_encryption' => 'ssl',
+            'smtp_username' => 'private-smtp-user',
+            'smtp_password' => ' private-smtp-password ',
+            'smtp_from_address' => 'service@example.test',
+            'smtp_from_name' => 'Service Mail',
+        ])->assertRedirect();
+
+        $settings = PaymentSettings::current();
+        $raw = DB::table('payment_settings')->where('id', 1)->first();
+        $this->assertTrue($settings->smtp_enabled);
+        $this->assertSame('private-smtp-user', $settings->smtp_username);
+        $this->assertSame(' private-smtp-password ', $settings->smtp_password);
+        $this->assertNotSame('private-smtp-user', $raw->smtp_username);
+        $this->assertNotSame('private-smtp-password', $raw->smtp_password);
+        $this->assertArrayNotHasKey('smtp_username', $settings->toArray());
+        $this->assertArrayNotHasKey('smtp_password', $settings->toArray());
+        $this->assertDatabaseHas('admin_audit_logs', [
+            'actor_id' => $admin->id,
+            'action' => 'smtp_settings_updated',
+        ]);
+
+        $this->actingAs($admin)->get('/admin')->assertOk()
+            ->assertDontSee('private-smtp-user')
+            ->assertDontSee('private-smtp-password')
+            ->assertSee('Активно подключение из админ-панели.');
+
+        $this->actingAs($admin)->post('/admin/mail-settings/test')
+            ->assertRedirect()
+            ->assertSessionHas('status', 'Тестовое письмо отправлено на адрес вашей учётной записи администратора.');
+        Notification::assertSentOnDemand(
+            SmtpTestNotification::class,
+            fn ($notification, $channels, $notifiable): bool => $notifiable->routes['mail'] === $admin->email,
+        );
+        $this->assertSame('smtp', config('mail.default'));
+        $this->assertSame('mail.example.test', config('mail.mailers.smtp.host'));
+        $this->assertSame('smtps', config('mail.mailers.smtp.scheme'));
+        $this->assertSame('service@example.test', config('mail.from.address'));
+        $this->assertSame(' private-smtp-password ', config('mail.mailers.smtp.password'));
+    }
+
+    public function test_smtp_invalid_settings_do_not_flash_credentials_and_do_not_save(): void
+    {
+        $admin = User::factory()->create(['is_admin' => true]);
+
+        $this->actingAs($admin)->put('/admin/mail-settings', [
+            'smtp_enabled' => '1',
+            'smtp_host' => '',
+            'smtp_port' => '70000',
+            'smtp_encryption' => 'invalid',
+            'smtp_username' => 'private-smtp-user',
+            'smtp_password' => 'private-smtp-password',
+            'smtp_from_address' => 'not-an-email',
+        ])->assertSessionHasErrors(['smtp_host', 'smtp_port', 'smtp_encryption', 'smtp_from_address']);
+
+        $this->assertFalse(session()->hasOldInput('smtp_username'));
+        $this->assertFalse(session()->hasOldInput('smtp_password'));
+        $this->assertDatabaseCount('payment_settings', 0);
+    }
+
+    public function test_smtp_settings_can_be_disabled_to_return_to_environment_mail_configuration(): void
+    {
+        config([
+            'mail.default' => 'log',
+            'mail.from.address' => 'env@example.test',
+        ]);
+        PaymentSettings::current()->update([
+            'smtp_enabled' => true,
+            'smtp_host' => 'admin-mail.example.test',
+            'smtp_port' => 587,
+            'smtp_encryption' => 'tls',
+            'smtp_from_address' => 'admin@example.test',
+        ]);
+        $admin = User::factory()->create(['is_admin' => true]);
+
+        $this->actingAs($admin)->put('/admin/mail-settings', [
+            'smtp_enabled' => '0',
+        ])->assertRedirect();
+
+        $this->assertFalse(PaymentSettings::current()->smtp_enabled);
+        $this->assertFalse(app(RuntimeMailSettings::class)->configure());
+        $this->assertSame('log', config('mail.default'));
+        $this->assertSame('env@example.test', config('mail.from.address'));
     }
 
     public function test_clearing_admin_credentials_falls_back_to_existing_environment_configuration(): void

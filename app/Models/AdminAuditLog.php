@@ -26,6 +26,11 @@ class AdminAuditLog extends Model
             'user_panel_assigned' => 'Назначена панель',
             'subscription_sync_failed' => 'Ошибка синхронизации подписки',
             'homepage_content_updated' => 'Обновлена главная страница',
+            'smtp_settings_updated' => 'Обновлены настройки SMTP',
+            'payment_credentials_updated' => 'Обновлены реквизиты платежей',
+            'nowpayments_checkout_toggled' => 'Изменён статус криптооплаты',
+            'nowpayments_rub_verified' => 'Проверена валюта RUB',
+            'nowpayments_rub_verification_failed' => 'Не пройдена проверка валюты RUB',
             default => 'Административное изменение',
         };
     }

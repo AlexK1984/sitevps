@@ -32,6 +32,7 @@ class PaymentEvent extends Model
     {
         return match ($this->provider) {
             'yookassa' => 'ЮKassa',
+            'nowpayments' => 'NOWPayments',
             'telegram_stars' => 'Telegram Stars',
             'internal_test' => 'Внутренний тест',
             default => 'Платёжная система',
@@ -44,9 +45,12 @@ class PaymentEvent extends Model
             'order_created' => 'Заказ создан',
             'payment_request_created' => 'Платёж создан у провайдера',
             'payment_request_failed' => 'Ошибка создания платежа',
+            'invoice_created' => 'Счёт создан у провайдера',
+            'invoice_request_failed' => 'Ошибка создания счёта',
             'webhook_verified' => 'Webhook проверен',
             'webhook_rejected' => 'Webhook отклонён проверкой',
             'payment_status_received' => 'Статус платежа подтверждён',
+            'payment_terminal_received' => 'Счёт завершён без оплаты',
             'test_simulated' => 'Тестовая оплата смоделирована',
             'test_mode_enabled' => 'Тестовый режим включён',
             'test_mode_disabled' => 'Тестовый режим выключен',

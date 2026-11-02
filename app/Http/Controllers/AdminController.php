@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Exceptions\InternalTestPaymentException;
 use App\Exceptions\PanelApiException;
+use App\Exceptions\PaymentGatewayException;
 use App\Jobs\ProvisionSubscription;
 use App\Models\AdminAuditLog;
 use App\Models\Order;
@@ -14,16 +15,22 @@ use App\Models\SiteContent;
 use App\Models\Subscription;
 use App\Models\Tariff;
 use App\Models\User;
+use App\Notifications\SmtpTestNotification;
 use App\Services\InternalTestPaymentService;
+use App\Services\NowPaymentsClient;
 use App\Services\PaymentEventLogger;
+use App\Services\RuntimeMailSettings;
 use App\Services\ThreeXUiClient;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use Illuminate\View\View;
+use Symfony\Component\Mailer\Exception\TransportExceptionInterface;
 
 class AdminController extends Controller
 {
@@ -32,7 +39,7 @@ class AdminController extends Controller
         $settings = PaymentSettings::current();
         $yookassaCredentials = $settings->yookassaCredentials();
         $eventProvider = $request->query('event_provider');
-        if (! in_array($eventProvider, ['yookassa', 'telegram_stars', 'internal_test'], true)) {
+        if (! in_array($eventProvider, ['yookassa', 'nowpayments', 'telegram_stars', 'internal_test'], true)) {
             $eventProvider = null;
         }
 
@@ -70,15 +77,22 @@ class AdminController extends Controller
                 'yookassa_enabled' => $settings->yookassa_enabled,
                 'telegram_stars_enabled' => $settings->telegram_stars_enabled,
                 'internal_test_payments_enabled' => $settings->internal_test_payments_enabled,
-                'crypto_asset' => $settings->crypto_asset,
-                'crypto_network' => $settings->crypto_network,
-                'crypto_confirmations' => $settings->crypto_confirmations,
-                'crypto_payment_ttl_minutes' => $settings->crypto_payment_ttl_minutes,
-                'crypto_admin_notes' => $settings->crypto_admin_notes,
+                'nowpayments_enabled' => $settings->nowpayments_enabled,
+                'nowpayments_rub_verified' => $settings->nowpayments_rub_verified,
                 'yookassa_configured' => filled($yookassaCredentials['shop_id']) && filled($yookassaCredentials['secret_key']),
                 'yookassa_configured_in_admin' => $settings->yookassaConfiguredInAdmin(),
                 'telegram_configured' => filled($settings->telegramBotToken()),
                 'telegram_configured_in_admin' => $settings->telegramConfiguredInAdmin(),
+                'smtp_enabled' => $settings->smtp_enabled,
+                'smtp_host' => $settings->smtp_host,
+                'smtp_port' => $settings->smtp_port,
+                'smtp_encryption' => $settings->smtp_encryption,
+                'smtp_from_address' => $settings->smtp_from_address,
+                'smtp_from_name' => $settings->smtp_from_name,
+                'smtp_configured_in_admin' => $settings->smtpConfiguredInAdmin(),
+                'smtp_username_configured_in_admin' => $settings->smtpUsernameConfiguredInAdmin(),
+                'smtp_password_configured_in_admin' => $settings->smtpPasswordConfiguredInAdmin(),
+                'nowpayments_configured_in_admin' => $settings->nowpaymentsConfiguredInAdmin(),
             ],
         ]);
     }
@@ -326,18 +340,39 @@ class AdminController extends Controller
         $validated = $request->validate([
             'yookassa_enabled' => ['required', 'boolean'],
             'telegram_stars_enabled' => ['required', 'boolean'],
+            'nowpayments_enabled' => ['sometimes', 'boolean'],
             'internal_test_payments_enabled' => ['sometimes', 'boolean'],
-            'crypto_asset' => ['nullable', 'string', 'max:20', 'regex:/^[A-Za-z0-9._-]+$/'],
-            'crypto_network' => ['nullable', 'string', 'max:80'],
-            'crypto_confirmations' => ['nullable', 'integer', 'min:1', 'max:1000'],
-            'crypto_payment_ttl_minutes' => ['nullable', 'integer', 'min:1', 'max:1440'],
-            'crypto_admin_notes' => ['nullable', 'string', 'max:2000'],
         ]);
 
         $settings = PaymentSettings::current();
+        $wasNowPaymentsEnabled = $settings->nowpayments_enabled;
         $wasTestModeEnabled = $settings->internal_test_payments_enabled;
         $validated['internal_test_payments_enabled'] = $request->boolean('internal_test_payments_enabled');
+        if (array_key_exists('nowpayments_enabled', $validated)) {
+            $enableNowPayments = $request->boolean('nowpayments_enabled');
+            if ($enableNowPayments && ! $settings->nowpaymentsConfiguredInAdmin()) {
+                throw ValidationException::withMessages([
+                    'nowpayments_enabled' => 'Сначала сохраните API key и IPN secret NOWPayments.',
+                ]);
+            }
+            if ($enableNowPayments && ! $settings->nowpayments_rub_verified) {
+                throw ValidationException::withMessages([
+                    'nowpayments_enabled' => 'Сначала проверьте поддержку RUB через кнопку проверки NOWPayments.',
+                ]);
+            }
+            $validated['nowpayments_enabled'] = $enableNowPayments;
+        }
         $settings->update($validated);
+
+        if ($wasNowPaymentsEnabled !== $settings->nowpayments_enabled) {
+            AdminAuditLog::query()->create([
+                'actor_id' => $request->user()->id,
+                'action' => 'nowpayments_checkout_toggled',
+                'summary' => $settings->nowpayments_enabled
+                    ? 'Включена оплата через проверенный NOWPayments checkout в RUB.'
+                    : 'Оплата через NOWPayments отключена.',
+            ]);
+        }
 
         if ($wasTestModeEnabled !== $settings->internal_test_payments_enabled) {
             app(PaymentEventLogger::class)->record(
@@ -351,6 +386,49 @@ class AdminController extends Controller
         }
 
         return back()->with('status', 'Настройки способов оплаты сохранены.');
+    }
+
+    public function verifyNowPaymentsRuble(
+        Request $request,
+        NowPaymentsClient $nowPayments,
+    ): RedirectResponse {
+        $settings = PaymentSettings::current();
+        if (! $settings->nowpaymentsConfiguredInAdmin()) {
+            return back()->withErrors([
+                'nowpayments' => 'Сначала сохраните API key и IPN secret NOWPayments.',
+            ]);
+        }
+
+        try {
+            $nowPayments->verifyRubleSupport();
+        } catch (PaymentGatewayException) {
+            DB::transaction(function () use ($settings, $request): void {
+                $settings->update([
+                    'nowpayments_enabled' => false,
+                    'nowpayments_rub_verified' => false,
+                ]);
+                AdminAuditLog::query()->create([
+                    'actor_id' => $request->user()->id,
+                    'action' => 'nowpayments_rub_verification_failed',
+                    'summary' => 'Проверка поддержки RUB через NOWPayments не прошла; криптооплата выключена.',
+                ]);
+            });
+
+            return back()->withErrors([
+                'nowpayments' => 'NOWPayments не подтвердил поддержку RUB. Оплата оставлена выключенной.',
+            ]);
+        }
+
+        $settings->update([
+            'nowpayments_rub_verified' => true,
+        ]);
+        AdminAuditLog::query()->create([
+            'actor_id' => $request->user()->id,
+            'action' => 'nowpayments_rub_verified',
+            'summary' => 'NOWPayments API подтвердил доступность расчёта минимальной суммы для RUB.',
+        ]);
+
+        return back()->with('status', 'Поддержка RUB подтверждена запросом к NOWPayments. Теперь можно включить криптооплату.');
     }
 
     public function createTestPayment(
@@ -389,13 +467,22 @@ class AdminController extends Controller
 
     public function updatePaymentCredentials(Request $request): RedirectResponse
     {
-        $secretFields = ['yookassa_shop_id', 'yookassa_secret_key', 'telegram_bot_token'];
+        $secretFields = [
+            'yookassa_shop_id',
+            'yookassa_secret_key',
+            'telegram_bot_token',
+            'nowpayments_api_key',
+            'nowpayments_ipn_secret',
+        ];
         $validator = Validator::make($request->all(), [
             'yookassa_shop_id' => ['nullable', 'string', 'max:255'],
             'yookassa_secret_key' => ['nullable', 'string', 'max:500'],
             'telegram_bot_token' => ['nullable', 'string', 'max:500'],
+            'nowpayments_api_key' => ['nullable', 'string', 'max:500'],
+            'nowpayments_ipn_secret' => ['nullable', 'string', 'max:500'],
             'clear_yookassa' => ['sometimes', 'boolean'],
             'clear_telegram' => ['sometimes', 'boolean'],
+            'clear_nowpayments' => ['sometimes', 'boolean'],
         ]);
 
         if ($validator->fails()) {
@@ -443,11 +530,122 @@ class AdminController extends Controller
             }
         }
 
+        if ($request->boolean('clear_nowpayments')) {
+            $updates['nowpayments_api_key'] = null;
+            $updates['nowpayments_ipn_secret'] = null;
+            $updates['nowpayments_enabled'] = false;
+            $updates['nowpayments_rub_verified'] = false;
+        } else {
+            $nowPaymentsCredentialsChanged = false;
+            foreach (['nowpayments_api_key', 'nowpayments_ipn_secret'] as $field) {
+                $value = trim((string) ($validated[$field] ?? ''));
+                if ($value !== '') {
+                    $updates[$field] = $value;
+                    $nowPaymentsCredentialsChanged = true;
+                }
+            }
+            if ($nowPaymentsCredentialsChanged) {
+                $updates['nowpayments_enabled'] = false;
+                $updates['nowpayments_rub_verified'] = false;
+            }
+        }
+
         if ($updates !== []) {
-            $settings->update($updates);
+            DB::transaction(function () use ($settings, $updates, $request): void {
+                $settings->update($updates);
+                AdminAuditLog::query()->create([
+                    'actor_id' => $request->user()->id,
+                    'action' => 'payment_credentials_updated',
+                    'summary' => 'Изменены учётные данные платёжных сервисов: '.implode(', ', array_keys($updates)).'. Секретные значения в журнал не записывались.',
+                ]);
+            });
         }
 
         return back()->with('status', 'Учётные данные сохранены. Секреты не отображаются повторно.');
+    }
+
+    public function updateMailSettings(Request $request): RedirectResponse
+    {
+        $secretFields = ['smtp_username', 'smtp_password'];
+        $validator = Validator::make($request->all(), [
+            'smtp_enabled' => ['required', 'boolean'],
+            'smtp_host' => ['nullable', 'string', 'max:255', 'required_if:smtp_enabled,1'],
+            'smtp_port' => ['nullable', 'integer', 'between:1,65535', 'required_if:smtp_enabled,1'],
+            'smtp_encryption' => ['nullable', 'in:tls,ssl', 'required_if:smtp_enabled,1'],
+            'smtp_username' => ['nullable', 'string', 'max:255'],
+            'smtp_password' => ['nullable', 'string', 'max:1000'],
+            'smtp_from_address' => ['nullable', 'email', 'max:255', 'required_if:smtp_enabled,1'],
+            'smtp_from_name' => ['nullable', 'string', 'max:255'],
+            'clear_smtp_username' => ['sometimes', 'boolean'],
+            'clear_smtp_password' => ['sometimes', 'boolean'],
+        ]);
+
+        if ($validator->fails()) {
+            return back()
+                ->withErrors($validator)
+                ->withInput($request->except($secretFields));
+        }
+
+        $validated = $validator->validated();
+        $settings = PaymentSettings::current();
+        $updates = [
+            'smtp_enabled' => $request->boolean('smtp_enabled'),
+            'smtp_host' => filled($validated['smtp_host'] ?? null) ? trim($validated['smtp_host']) : null,
+            'smtp_port' => $validated['smtp_port'] ?? null,
+            'smtp_encryption' => $validated['smtp_encryption'] ?? null,
+            'smtp_from_address' => filled($validated['smtp_from_address'] ?? null) ? trim($validated['smtp_from_address']) : null,
+            'smtp_from_name' => filled($validated['smtp_from_name'] ?? null) ? trim($validated['smtp_from_name']) : null,
+        ];
+
+        if ($request->boolean('clear_smtp_username')) {
+            $updates['smtp_username'] = null;
+        } elseif (filled($validated['smtp_username'] ?? null)) {
+            $updates['smtp_username'] = trim($validated['smtp_username']);
+        }
+
+        if ($request->boolean('clear_smtp_password')) {
+            $updates['smtp_password'] = null;
+        } elseif (filled($validated['smtp_password'] ?? null)) {
+            $updates['smtp_password'] = $validated['smtp_password'];
+        }
+
+        $changed = array_keys($updates);
+        DB::transaction(function () use ($request, $settings, $updates, $changed): void {
+            $settings->update($updates);
+            AdminAuditLog::query()->create([
+                'actor_id' => $request->user()->id,
+                'action' => 'smtp_settings_updated',
+                'summary' => 'Изменены настройки SMTP: '.implode(', ', $changed).'. Секретные значения в журнал не записывались.',
+            ]);
+        });
+
+        return back()->with('status', 'Настройки SMTP сохранены. Пароль не отображается повторно.');
+    }
+
+    public function sendTestMail(Request $request, RuntimeMailSettings $mailSettings): RedirectResponse
+    {
+        if (! $mailSettings->configure()
+            || config('mail.default') !== 'smtp'
+            || config('mail.mailers.smtp.transport') !== 'smtp') {
+            return back()->withErrors([
+                'smtp_test' => 'Почта не настроена. Сохраните SMTP-настройки или проверьте настройки почтового транспорта на сервере.',
+            ]);
+        }
+
+        try {
+            Notification::route('mail', $request->user()->email)
+                ->notify(new SmtpTestNotification);
+        } catch (TransportExceptionInterface $exception) {
+            Log::warning('SMTP test delivery failed.', [
+                'exception_class' => $exception::class,
+            ]);
+
+            return back()->withErrors([
+                'smtp_test' => 'Не удалось отправить тестовое письмо. Проверьте адрес сервера, порт, шифрование и учётные данные SMTP.',
+            ]);
+        }
+
+        return back()->with('status', 'Тестовое письмо отправлено на адрес вашей учётной записи администратора.');
     }
 
     public function storePanel(Request $request): RedirectResponse

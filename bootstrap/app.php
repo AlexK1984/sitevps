@@ -14,12 +14,14 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withMiddleware(function (Middleware $middleware): void {
+        $middleware->trimStrings(except: ['smtp_password']);
         $middleware->alias([
             'admin' => EnsureAdmin::class,
             'active' => EnsureUserIsActive::class,
         ]);
         $middleware->validateCsrfTokens(except: [
             'webhooks/yookassa',
+            'webhooks/nowpayments',
             'webhooks/telegram',
         ]);
     })

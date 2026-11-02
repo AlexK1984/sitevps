@@ -55,9 +55,13 @@
                     <ul class="feature-list"><li><span>↗</span> {{ $tariff->traffic_gb }} ГБ</li><li><span>◉</span> До {{ $tariff->connection_limit }} IP*</li></ul>
                     @if($yookassaAvailable)
                         <form method="post" action="{{ route('checkout', $tariff) }}">@csrf<button class="button button-full" type="submit">Оплатить через ЮKassa →</button></form>
-                    @else
-                        <p class="muted">Оплата через сайт временно недоступна.</p>
                     @endif
+                    @if($nowPaymentsAvailable)
+                        <form method="post" action="{{ route('checkout.nowpayments', $tariff) }}">@csrf<button class="button button-outline button-full" type="submit">Оплатить криптовалютой →</button></form>
+                    @endif
+                    @unless($yookassaAvailable || $nowPaymentsAvailable)
+                        <p class="muted">Оплата через сайт временно недоступна.</p>
+                    @endunless
                 </article>
             @endforeach
         </div>

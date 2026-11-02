@@ -14,6 +14,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
     'amount_kopecks',
     'status',
     'payment_id',
+    'nowpayments_invoice_id',
     'payment_url',
     'payment_method',
     'payment_currency',
@@ -71,6 +72,7 @@ class Order extends Model
 
         return match ($this->payment_method) {
             'telegram_stars' => 'Telegram Stars',
+            'nowpayments' => 'NOWPayments',
             default => 'ЮKassa',
         };
     }
