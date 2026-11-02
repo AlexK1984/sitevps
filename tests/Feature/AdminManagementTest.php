@@ -10,6 +10,7 @@ use App\Models\User;
 use App\Services\ThreeXUiClient;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request as ClientRequest;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
 use Mockery;
@@ -132,21 +133,12 @@ class AdminManagementTest extends TestCase
     public function test_disabled_account_cannot_log_in_or_continue_using_an_existing_session(): void
     {
         $user = User::factory()->create(['is_active' => false]);
-        config([
-            'services.recaptcha.secret_key' => 'test-secret',
-            'services.recaptcha.site_key' => 'test-site-key',
-        ]);
-        Http::fake([
-            'https://www.google.com/recaptcha/api/siteverify' => Http::response([
-                'success' => true,
-                'hostname' => 'localhost',
-            ]),
-        ]);
+        $captcha = $this->localCaptchaFields('/login');
 
         $this->post('/login', [
             'email' => $user->email,
             'password' => 'password',
-            'g-recaptcha-response' => 'valid-test-token',
+            ...$captcha,
         ])->assertSessionHasErrors('email');
         $this->assertGuest();
 
@@ -245,5 +237,34 @@ class AdminManagementTest extends TestCase
             'username' => 'panel-admin',
             'password' => 'panel-secret',
         ]);
+    }
+
+    /**
+     * @return array{captcha_challenge: string, captcha_answer: string}
+     */
+    private function localCaptchaFields(string $path): array
+    {
+        Carbon::setTestNow(Carbon::parse('2026-11-02 12:00:00'));
+        $html = (string) $this->get($path)->assertOk()->getContent();
+        preg_match('/name="captcha_challenge" value="([^"]+)"/', $html, $challengeMatch);
+        preg_match('/Решите пример: (\d+) ([+-]) (\d+) = \?/', $html, $questionMatch);
+        $this->assertNotEmpty($challengeMatch[1] ?? null);
+        $this->assertNotEmpty($questionMatch);
+
+        $left = (int) $questionMatch[1];
+        $right = (int) $questionMatch[3];
+        $answer = $questionMatch[2] === '+' ? $left + $right : $left - $right;
+        Carbon::setTestNow(Carbon::parse('2026-11-02 12:00:03'));
+
+        return [
+            'captcha_challenge' => $challengeMatch[1],
+            'captcha_answer' => (string) $answer,
+        ];
+    }
+
+    protected function tearDown(): void
+    {
+        Carbon::setTestNow();
+        parent::tearDown();
     }
 }

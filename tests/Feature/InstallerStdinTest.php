@@ -24,7 +24,6 @@ class InstallerStdinTest extends TestCase
             'VPS public IP address(es)',
             'Email address for Let\'s Encrypt',
             'Administrator email',
-            'Google reCAPTCHA v2 site key',
             'Confirm your VPS/provider firewall',
         ] as $prompt) {
             $this->assertMatchesRegularExpression(
@@ -33,12 +32,7 @@ class InstallerStdinTest extends TestCase
                 "Installer prompt '{$prompt}' must read from the controlling terminal.",
             );
         }
-        $this->assertMatchesRegularExpression(
-            '/read -r -s -u 3 -p "Google reCAPTCHA v2 secret key/',
-            $installer,
-        );
-        $this->assertStringContainsString('set_env RECAPTCHA_SECRET_KEY "$RECAPTCHA_SECRET_KEY"', $installer);
-        $this->assertStringContainsString('unset RECAPTCHA_SECRET_KEY', $installer);
+        $this->assertStringNotContainsString('RECAPTCHA_', $installer);
 
         $this->assertStringContainsString(
             'app:make-admin "$ADMIN_EMAIL" <&3',

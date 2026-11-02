@@ -5,7 +5,6 @@ namespace Tests\Feature;
 use App\Models\User;
 use App\Notifications\PasswordResetNotification;
 use Illuminate\Foundation\Testing\RefreshDatabase;
-use Illuminate\Http\Client\Request as ClientRequest;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
@@ -17,80 +16,93 @@ class AuthenticationRecoveryTest extends TestCase
 {
     use RefreshDatabase;
 
-    public function test_recaptcha_rejects_missing_or_wrong_host_tokens_without_flashing_them(): void
+    public function test_local_captcha_rejects_wrong_answers_and_never_flashes_sensitive_fields(): void
     {
-        $this->configureRecaptcha();
-        Http::fake([
-            'https://www.google.com/recaptcha/api/siteverify' => Http::response([
-                'success' => true,
-                'hostname' => 'attacker.example',
-            ]),
-        ]);
+        $captcha = $this->getCaptcha('/register');
+        $response = $this->post('/register', array_merge($this->registrationData(), $captcha, [
+            'captcha_answer' => '999999',
+        ]))->assertSessionHasErrors('captcha_answer');
 
-        $this->post('/register', $this->registrationData())
-            ->assertSessionHasErrors('g-recaptcha-response');
-
-        $response = $this->post('/register', $this->registrationData('forged-token'))
-            ->assertSessionHasErrors('g-recaptcha-response');
-
-        $this->assertArrayNotHasKey('g-recaptcha-response', session()->get('_old_input', []));
+        $this->assertArrayNotHasKey('captcha_answer', session()->get('_old_input', []));
+        $this->assertArrayNotHasKey('captcha_challenge', session()->get('_old_input', []));
         $this->assertDatabaseCount('users', 0);
-        Http::assertSentCount(1);
-        $this->assertFalse(str_contains($response->getSession()->get('_old_input.email', ''), 'forged-token'));
+        $this->assertFalse(str_contains((string) $response->getContent(), $captcha['captcha_challenge']));
     }
 
-    public function test_recaptcha_fails_closed_when_server_secret_is_missing(): void
+    public function test_local_captcha_challenge_is_bound_to_session_and_csrf_token(): void
     {
-        config(['services.recaptcha.secret_key' => null]);
-        Http::fake();
+        $captcha = $this->getCaptcha('/login');
+        $user = User::factory()->create(['email' => 'session@example.test']);
+        $this->withSession(['_token' => str_repeat('x', 40)])
+            ->post('/login', [
+                'email' => $user->email,
+                'password' => 'password',
+                ...$captcha,
+            ])->assertSessionHasErrors('captcha_answer');
 
-        $this->post('/login', [
-            'email' => 'user@example.test',
-            'password' => 'password',
-            'g-recaptcha-response' => 'client-supplied-token',
-        ])->assertSessionHasErrors('g-recaptcha-response');
-
-        Http::assertNothingSent();
         $this->assertGuest();
     }
 
-    public function test_successful_recaptcha_allows_auth_and_google_rejects_replayed_tokens(): void
+    public function test_local_captcha_allows_login_and_rejects_replayed_challenge(): void
     {
-        $this->configureRecaptcha();
-        Http::fakeSequence('https://www.google.com/recaptcha/api/siteverify')
-            ->push(['success' => true, 'hostname' => 'vpn.example.test'])
-            ->push(['success' => true, 'hostname' => 'vpn.example.test'])
-            ->push(['success' => true, 'hostname' => 'vpn.example.test']);
-
-        $this->post('/register', $this->registrationData('registration-token'))
-            ->assertRedirect(route('dashboard'));
-        $this->assertAuthenticated();
-
-        Http::assertSent(function (ClientRequest $request): bool {
-            return $request->url() === 'https://www.google.com/recaptcha/api/siteverify'
-                && $request['secret'] === 'test-secret'
-                && $request['response'] === 'registration-token'
-                && is_string($request['remoteip']);
-        });
-
-        $this->post('/logout')->assertRedirect(route('home'));
-        $user = User::query()->where('email', 'captcha@example.test')->firstOrFail();
+        $captcha = $this->getCaptcha('/login');
+        $user = User::factory()->create(['email' => 'captcha@example.test']);
 
         $this->post('/login', [
             'email' => $user->email,
-            'password' => 'correct-horse-battery',
-            'g-recaptcha-response' => 'single-use-token',
+            'password' => 'password',
+            ...$captcha,
         ])->assertRedirect(route('dashboard'));
         $this->assertAuthenticatedAs($user);
 
         $this->post('/logout');
         $this->post('/login', [
             'email' => $user->email,
-            'password' => 'correct-horse-battery',
-            'g-recaptcha-response' => 'single-use-token',
-        ])->assertSessionHasErrors('g-recaptcha-response');
+            'password' => 'password',
+            ...$captcha,
+        ])->assertSessionHasErrors('captcha_answer');
         $this->assertGuest();
-        Http::assertSentCount(3);
+    }
+
+    public function test_honeypot_is_rejected(): void
+    {
+        $captcha = $this->getCaptcha('/register');
+        $this->post('/register', array_merge($this->registrationData(), $captcha, [
+            'website' => 'bot-filled-this',
+        ]))->assertSessionHasErrors('captcha_answer');
+        $this->assertDatabaseCount('users', 0);
+    }
+
+    public function test_submission_before_minimum_completion_time_is_rejected(): void
+    {
+        $captcha = $this->getCaptcha('/register', 0);
+
+        $this->post('/register', array_merge($this->registrationData(), $captcha))
+            ->assertSessionHasErrors('captcha_answer');
+        $this->assertDatabaseCount('users', 0);
+    }
+
+    public function test_local_captcha_expiry_is_enforced(): void
+    {
+        $captcha = $this->getCaptcha('/register');
+        Carbon::setTestNow(now()->addMinutes(6));
+
+        $this->post('/register', array_merge($this->registrationData(), $captcha))
+            ->assertSessionHasErrors('captcha_answer');
+        $this->assertDatabaseCount('users', 0);
+    }
+
+    public function test_auth_forms_use_server_generated_accessible_challenges_without_external_captcha_scripts(): void
+    {
+        $this->get('/login')->assertOk()
+            ->assertSee('Решите пример:')
+            ->assertSee('captcha_answer')
+            ->assertDontSee('google.com/recaptcha');
+        $this->get('/register')->assertOk()
+            ->assertSee('Решите пример:')
+            ->assertSee('captcha_answer')
+            ->assertDontSee('google.com/recaptcha');
+        Http::assertNothingSent();
     }
 
     public function test_password_reset_response_does_not_disclose_account_existence_and_token_is_one_time(): void
@@ -189,14 +201,35 @@ class AuthenticationRecoveryTest extends TestCase
         $this->assertDatabaseCount('password_reset_tokens', 0);
     }
 
-    private function configureRecaptcha(): void
+    private function getCaptcha(string $path, int $elapsedSeconds = 3): array
     {
-        config([
-            'app.url' => 'https://vpn.example.test',
-            'services.recaptcha.site_key' => 'test-site-key',
-            'services.recaptcha.secret_key' => 'test-secret',
-            'services.recaptcha.hostname' => 'vpn.example.test',
-        ]);
+        Carbon::setTestNow(Carbon::parse('2026-11-02 12:00:00'));
+        $response = $this->get($path)->assertOk();
+        $html = (string) $response->getContent();
+
+        preg_match('/name="captcha_challenge" value="([^"]+)"/', $html, $challengeMatch);
+        preg_match('/Решите пример: (\d+) ([+-]) (\d+) = \?/', $html, $questionMatch);
+        $this->assertNotEmpty($challengeMatch[1] ?? null);
+        $this->assertNotEmpty($questionMatch);
+        $stored = session('auth_captcha');
+        $this->assertIsArray($stored);
+        $this->assertSame(hash('sha256', $challengeMatch[1]), $stored['challenge_hash']);
+        $this->assertSame(
+            hash('sha256', session()->token()),
+            $stored['binding_hash'],
+        );
+        $this->assertIsInt($stored['issued_at']);
+        $this->assertIsInt($stored['expires_at']);
+
+        $left = (int) $questionMatch[1];
+        $right = (int) $questionMatch[3];
+        $answer = $questionMatch[2] === '+' ? $left + $right : $left - $right;
+        Carbon::setTestNow(Carbon::parse('2026-11-02 12:00:00')->addSeconds($elapsedSeconds));
+
+        return [
+            'captcha_challenge' => $challengeMatch[1],
+            'captcha_answer' => (string) $answer,
+        ];
     }
 
     private function configureSmtpForTesting(): void
@@ -211,14 +244,19 @@ class AuthenticationRecoveryTest extends TestCase
     /**
      * @return array<string, string>
      */
-    private function registrationData(string $captchaToken = ''): array
+    private function registrationData(): array
     {
         return [
             'name' => 'Captcha user',
             'email' => 'captcha@example.test',
             'password' => 'correct-horse-battery',
             'password_confirmation' => 'correct-horse-battery',
-            'g-recaptcha-response' => $captchaToken,
         ];
+    }
+
+    protected function tearDown(): void
+    {
+        Carbon::setTestNow();
+        parent::tearDown();
     }
 }

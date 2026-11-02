@@ -410,21 +410,18 @@ a{
   color:var(--green);
   font-weight:700
 }
-.captcha-wrap{
- margin:18px 0;
- overflow-x:auto
-}
-.captcha-unconfigured{
- padding:10px 12px;
- border-radius:7px;
- background:#fff1ef;
- color:#873c33;
- font-size:12px
-}
 .captcha-info{
  color:var(--muted);
  font-size:11px;
  line-height:1.5
+}
+.captcha-honeypot{
+ position:absolute!important;
+ width:1px!important;
+ height:1px!important;
+ overflow:hidden!important;
+ clip:rect(0,0,0,0)!important;
+ white-space:nowrap!important
 }
 .notice{
   padding:13px 16px;

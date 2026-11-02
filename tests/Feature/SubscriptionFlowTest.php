@@ -35,28 +35,48 @@ class SubscriptionFlowTest extends TestCase
     {
         $this->get('/')->assertOk();
 
-        config([
-            'services.recaptcha.secret_key' => 'test-secret',
-            'services.recaptcha.site_key' => 'test-site-key',
-        ]);
-        Http::fake([
-            'https://www.google.com/recaptcha/api/siteverify' => Http::response([
-                'success' => true,
-                'hostname' => 'localhost',
-            ]),
-        ]);
+        $captcha = $this->localCaptchaFields('/register');
 
         $response = $this->post('/register', [
             'name' => 'VPN customer',
             'email' => 'Customer@Example.com',
             'password' => 'correct-horse-battery',
             'password_confirmation' => 'correct-horse-battery',
-            'g-recaptcha-response' => 'valid-test-token',
+            ...$captcha,
         ]);
 
         $response->assertRedirect(route('dashboard'));
         $this->assertAuthenticated();
         $this->assertDatabaseHas('users', ['email' => 'customer@example.com', 'is_admin' => false]);
+    }
+
+    /**
+     * @return array{captcha_challenge: string, captcha_answer: string}
+     */
+    private function localCaptchaFields(string $path): array
+    {
+        Carbon::setTestNow(Carbon::parse('2026-11-02 12:00:00'));
+        $html = (string) $this->get($path)->assertOk()->getContent();
+        preg_match('/name="captcha_challenge" value="([^"]+)"/', $html, $challengeMatch);
+        preg_match('/Решите пример: (\d+) ([+-]) (\d+) = \?/', $html, $questionMatch);
+        $this->assertNotEmpty($challengeMatch[1] ?? null);
+        $this->assertNotEmpty($questionMatch);
+
+        $left = (int) $questionMatch[1];
+        $right = (int) $questionMatch[3];
+        $answer = $questionMatch[2] === '+' ? $left + $right : $left - $right;
+        Carbon::setTestNow(Carbon::parse('2026-11-02 12:00:03'));
+
+        return [
+            'captcha_challenge' => $challengeMatch[1],
+            'captcha_answer' => (string) $answer,
+        ];
+    }
+
+    protected function tearDown(): void
+    {
+        Carbon::setTestNow();
+        parent::tearDown();
     }
 
     public function test_non_admin_cannot_open_admin_panel(): void
