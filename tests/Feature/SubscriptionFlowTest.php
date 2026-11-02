@@ -13,6 +13,7 @@ use App\Models\TelegramLinkToken;
 use App\Models\User;
 use App\Notifications\SmtpTestNotification;
 use App\Services\CheckoutService;
+use App\Services\DefaultPanelAssigner;
 use App\Services\InternalTestPaymentService;
 use App\Services\RuntimeMailSettings;
 use App\Services\TelegramBotClient;
@@ -51,6 +52,93 @@ class SubscriptionFlowTest extends TestCase
         $response->assertRedirect(route('dashboard'));
         $this->assertAuthenticated();
         $this->assertDatabaseHas('users', ['email' => 'customer@example.com', 'is_admin' => false]);
+    }
+
+    public function test_registration_and_new_orders_use_the_online_default_panel(): void
+    {
+        $panel = $this->createPanel('Default');
+        $panel->forceFill(['connection_status' => 'online'])->save();
+        PaymentSettings::current()->update(['default_panel_id' => $panel->id]);
+
+        $captcha = $this->localCaptchaFields('/register');
+        $this->post('/register', [
+            'name' => 'VPN customer',
+            'email' => 'default@example.com',
+            'password' => 'correct-horse-battery',
+            'password_confirmation' => 'correct-horse-battery',
+            ...$captcha,
+        ])->assertRedirect(route('dashboard'));
+
+        $user = User::query()->where('email', 'default@example.com')->firstOrFail();
+        $this->assertSame($panel->id, $user->assigned_panel_id);
+
+        $tariff = $this->createTariff();
+        $order = app(CheckoutService::class)->createTelegramStars($user, $tariff);
+        $this->assertSame($panel->id, $order->panel_id);
+    }
+
+    public function test_default_panel_does_not_override_manual_assignment_or_assign_existing_subscriptions(): void
+    {
+        $defaultPanel = $this->createPanel('Default');
+        $defaultPanel->forceFill(['connection_status' => 'online'])->save();
+        PaymentSettings::current()->update(['default_panel_id' => $defaultPanel->id]);
+
+        $manualPanel = $this->createPanel('Manual');
+        $manualUser = User::factory()->create(['assigned_panel_id' => $manualPanel->id]);
+        $this->assertNull(app(DefaultPanelAssigner::class)->assignIfEligible($manualUser));
+        $this->assertSame($manualPanel->id, $manualUser->fresh()->assigned_panel_id);
+
+        $subscribedUser = User::factory()->create();
+        Subscription::query()->create([
+            'user_id' => $subscribedUser->id,
+            'panel_id' => $manualPanel->id,
+            'tariff_id' => $this->createTariff()->id,
+            'client_uuid' => (string) Str::uuid(),
+            'sub_id' => Str::random(16),
+            'client_email' => 'user-'.$subscribedUser->id.'@sitevps',
+            'expires_at' => now()->addDays(30),
+            'traffic_limit_bytes' => 1_000_000_000,
+            'connection_limit' => 3,
+            'status' => 'active',
+        ]);
+
+        $this->assertNull(app(DefaultPanelAssigner::class)->assignIfEligible($subscribedUser));
+        $this->assertNull($subscribedUser->fresh()->assigned_panel_id);
+    }
+
+    public function test_default_panel_is_not_used_when_missing_or_offline(): void
+    {
+        $user = User::factory()->create();
+        $assigner = app(DefaultPanelAssigner::class);
+        $this->assertNull($assigner->assignIfEligible($user));
+
+        $offlinePanel = $this->createPanel('Offline');
+        $offlinePanel->forceFill(['connection_status' => 'offline'])->save();
+        PaymentSettings::current()->update(['default_panel_id' => $offlinePanel->id]);
+
+        $this->assertNull($assigner->assignIfEligible($user));
+        $this->assertNull($user->fresh()->assigned_panel_id);
+    }
+
+    public function test_paid_unassigned_order_uses_default_panel_when_provisioning_runs(): void
+    {
+        $panel = $this->createPanel('Default');
+        $panel->forceFill(['connection_status' => 'online'])->save();
+        PaymentSettings::current()->update(['default_panel_id' => $panel->id]);
+
+        $user = User::factory()->create();
+        $order = $this->createOrder($this->createTariff(), $user, 'paid_unassigned');
+        $order->update(['paid_at' => now()]);
+
+        $client = Mockery::mock(ThreeXUiClient::class);
+        $client->shouldReceive('provision')->once();
+        $this->app->instance(ThreeXUiClient::class, $client);
+
+        ProvisionSubscription::dispatchSync($order->id);
+
+        $this->assertSame($panel->id, $user->fresh()->assigned_panel_id);
+        $this->assertDatabaseHas('orders', ['id' => $order->id, 'status' => 'active', 'panel_id' => $panel->id]);
+        $this->assertDatabaseHas('subscriptions', ['user_id' => $user->id, 'panel_id' => $panel->id]);
     }
 
     /**

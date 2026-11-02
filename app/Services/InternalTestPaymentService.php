@@ -12,7 +12,10 @@ use Illuminate\Support\Str;
 
 class InternalTestPaymentService
 {
-    public function __construct(private readonly PaymentEventLogger $events) {}
+    public function __construct(
+        private readonly PaymentEventLogger $events,
+        private readonly DefaultPanelAssigner $panelAssigner,
+    ) {}
 
     public function simulateForCustomer(User $user, Tariff $tariff, string $idempotencyKey): array
     {
@@ -55,6 +58,9 @@ class InternalTestPaymentService
 
                 return [$existingOrder, false];
             }
+
+            $this->panelAssigner->assignIfEligible($user);
+            $user->refresh();
 
             if (! $tariff->is_active || ! $user->assigned_panel_id) {
                 throw new InternalTestPaymentException('Для тестовой выдачи нужен активный тариф и назначенная панель.');

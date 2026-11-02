@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\SiteContent;
 use App\Models\User;
+use App\Services\DefaultPanelAssigner;
 use App\Services\LocalCaptcha;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -32,7 +33,7 @@ class AuthController extends Controller
         ]);
     }
 
-    public function register(Request $request, LocalCaptcha $captcha): RedirectResponse
+    public function register(Request $request, LocalCaptcha $captcha, DefaultPanelAssigner $panelAssigner): RedirectResponse
     {
         $this->normalizeEmail($request);
         $validator = Validator::make($request->all(), [
@@ -60,6 +61,7 @@ class AuthController extends Controller
             'email' => $validated['email'],
             'password' => Hash::make($validated['password']),
         ]);
+        $panelAssigner->assignIfEligible($user);
 
         Auth::login($user);
         $request->session()->regenerate();

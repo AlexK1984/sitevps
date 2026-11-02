@@ -10,6 +10,7 @@ use App\Models\Subscription;
 use App\Models\SubscriptionOrderApplication;
 use App\Models\Tariff;
 use App\Models\User;
+use App\Services\DefaultPanelAssigner;
 use App\Services\PaymentEventLogger;
 use App\Services\ThreeXUiClient;
 use Illuminate\Bus\Queueable;
@@ -29,9 +30,9 @@ class ProvisionSubscription implements ShouldQueue
 
     public function __construct(public readonly int $orderId) {}
 
-    public function handle(ThreeXUiClient $client, PaymentEventLogger $events): void
+    public function handle(ThreeXUiClient $client, PaymentEventLogger $events, DefaultPanelAssigner $panelAssigner): void
     {
-        $provisioning = DB::transaction(function () use ($events): ?array {
+        $provisioning = DB::transaction(function () use ($events, $panelAssigner): ?array {
             $order = Order::query()->lockForUpdate()->findOrFail($this->orderId);
 
             if (! in_array($order->status, ['paid_unassigned', 'provisioning_failed'], true)) {
@@ -39,7 +40,6 @@ class ProvisionSubscription implements ShouldQueue
             }
 
             $user = User::query()->lockForUpdate()->findOrFail($order->user_id);
-            $panelId = $user->assigned_panel_id;
 
             if (! $user->is_active) {
                 $oldStatus = $order->status;
@@ -63,6 +63,14 @@ class ProvisionSubscription implements ShouldQueue
                 return null;
             }
 
+            if (! $user->assigned_panel_id) {
+                $defaultPanel = $panelAssigner->assignIfEligible($user);
+                if ($defaultPanel) {
+                    $user->assigned_panel_id = $defaultPanel->id;
+                }
+            }
+
+            $panelId = $user->assigned_panel_id;
             if (! $panelId) {
                 $oldStatus = $order->status;
                 $order->update(['status' => 'paid_unassigned', 'error_message' => null]);

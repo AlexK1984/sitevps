@@ -30,6 +30,7 @@ use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Facades\Password;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
+use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 use Illuminate\View\View;
 use Symfony\Component\Mailer\Exception\TransportExceptionInterface;
@@ -70,7 +71,11 @@ class AdminController extends Controller
                     ->withQueryString(),
             ],
             'tariffs' => ['tariffs' => Tariff::query()->orderBy('id')->get()],
-            'panels' => ['panels' => Panel::query()->orderBy('name')->get()],
+            'panels' => [
+                'panels' => Panel::query()->orderBy('name')->get(),
+                'onlinePanels' => Panel::query()->where('connection_status', 'online')->orderBy('name')->get(),
+                'defaultPanelId' => PaymentSettings::current()->default_panel_id,
+            ],
             'orders' => [
                 'orders' => Order::query()->with(['user', 'tariff', 'panel'])->latest()->limit(100)->get(),
             ],
@@ -949,6 +954,40 @@ class AdminController extends Controller
         ])->save();
 
         return back()->with('status', $result->message());
+    }
+
+    public function updateDefaultPanel(Request $request): RedirectResponse
+    {
+        $validated = $request->validate([
+            'default_panel_id' => [
+                'nullable',
+                'integer',
+                Rule::exists('panels', 'id')->where(fn ($query) => $query->where('connection_status', 'online')),
+            ],
+        ], [
+            'default_panel_id.exists' => 'Выберите панель со статусом «Онлайн» или очистите выбор.',
+        ]);
+
+        DB::transaction(function () use ($request, $validated): void {
+            $settings = PaymentSettings::query()->whereKey(1)->lockForUpdate()->firstOrFail();
+            $previousPanelId = $settings->default_panel_id;
+            $newPanelId = isset($validated['default_panel_id']) ? (int) $validated['default_panel_id'] : null;
+
+            if ($previousPanelId === $newPanelId) {
+                return;
+            }
+
+            $settings->update(['default_panel_id' => $newPanelId]);
+            AdminAuditLog::query()->create([
+                'actor_id' => $request->user()->id,
+                'action' => 'default_panel_updated',
+                'summary' => $newPanelId
+                    ? 'Изменена панель по умолчанию для новых пользователей без активной подписки.'
+                    : 'Отключено автоматическое назначение панели по умолчанию.',
+            ]);
+        });
+
+        return back()->with('status', 'Настройка панели по умолчанию сохранена.');
     }
 
     public function assignPanel(Request $request, User $user): RedirectResponse

@@ -84,6 +84,53 @@ class AdminManagementTest extends TestCase
 
     }
 
+    public function test_only_admin_can_set_an_online_default_panel_and_can_clear_it(): void
+    {
+        $admin = User::factory()->create(['is_admin' => true]);
+        $onlinePanel = Panel::create([
+            'name' => 'Online',
+            'base_url' => 'https://online.example.test',
+            'subscription_url_prefix' => 'https://vpn.example.test/sub',
+            'username' => 'admin',
+            'password' => 'panel-secret',
+        ]);
+        $onlinePanel->forceFill(['connection_status' => 'online'])->save();
+        $offlinePanel = Panel::create([
+            'name' => 'Offline',
+            'base_url' => 'https://offline.example.test',
+            'subscription_url_prefix' => 'https://vpn.example.test/sub',
+            'username' => 'admin',
+            'password' => 'panel-secret',
+        ]);
+        $offlinePanel->forceFill(['connection_status' => 'offline'])->save();
+
+        $this->actingAs($admin)->get(route('admin.panels'))
+            ->assertOk()
+            ->assertSee('Панель по умолчанию')
+            ->assertSee($onlinePanel->name)
+            ->assertDontSee('value="'.$offlinePanel->id.'"', false);
+
+        $this->put(route('admin.panels.default.update'), ['default_panel_id' => $onlinePanel->id])
+            ->assertRedirect()
+            ->assertSessionHas('status');
+        $this->assertSame($onlinePanel->id, PaymentSettings::current()->fresh()->default_panel_id);
+        $this->assertDatabaseHas('admin_audit_logs', [
+            'actor_id' => $admin->id,
+            'action' => 'default_panel_updated',
+        ]);
+
+        $this->put(route('admin.panels.default.update'), ['default_panel_id' => $offlinePanel->id])
+            ->assertSessionHasErrors('default_panel_id');
+
+        $this->put(route('admin.panels.default.update'), ['default_panel_id' => ''])
+            ->assertRedirect();
+        $this->assertNull(PaymentSettings::current()->fresh()->default_panel_id);
+
+        $this->actingAs(User::factory()->create())->put(route('admin.panels.default.update'), [
+            'default_panel_id' => $onlinePanel->id,
+        ])->assertForbidden();
+    }
+
     public function test_admin_can_request_a_private_one_time_password_reset_email_for_a_user(): void
     {
         Notification::fake();

@@ -13,10 +13,14 @@ class CheckoutService
     public function __construct(
         private readonly YooKassaClient $yooKassa,
         private readonly PaymentEventLogger $events,
+        private readonly DefaultPanelAssigner $panelAssigner,
     ) {}
 
     public function create(User $user, Tariff $tariff, string $returnUrl, bool $replacement = false): Order
     {
+        $this->panelAssigner->assignIfEligible($user);
+        $user->refresh();
+
         $order = Order::create([
             'reference' => (string) Str::uuid(),
             'user_id' => $user->id,
@@ -77,6 +81,9 @@ class CheckoutService
         if (! $tariff->price_stars || $tariff->price_stars < 1) {
             throw new PaymentGatewayException('Для тарифа не задана цена в Telegram Stars.');
         }
+
+        $this->panelAssigner->assignIfEligible($user);
+        $user->refresh();
 
         $order = Order::create([
             'reference' => (string) Str::uuid(),

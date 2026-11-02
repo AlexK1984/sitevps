@@ -13,10 +13,14 @@ class NowPaymentsCheckoutService
     public function __construct(
         private readonly NowPaymentsClient $nowPayments,
         private readonly PaymentEventLogger $events,
+        private readonly DefaultPanelAssigner $panelAssigner,
     ) {}
 
     public function create(User $user, Tariff $tariff, bool $replacement = false): Order
     {
+        $this->panelAssigner->assignIfEligible($user);
+        $user->refresh();
+
         $order = Order::query()->create([
             'reference' => (string) Str::uuid(),
             'user_id' => $user->id,

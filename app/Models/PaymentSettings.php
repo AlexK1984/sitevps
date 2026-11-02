@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Attributes\Hidden;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 #[Fillable([
     'yookassa_enabled',
@@ -25,6 +26,7 @@ use Illuminate\Database\Eloquent\Model;
     'nowpayments_ipn_secret',
     'nowpayments_enabled',
     'nowpayments_rub_verified',
+    'default_panel_id',
 ])]
 #[Hidden([
     'yookassa_shop_id',
@@ -54,7 +56,13 @@ class PaymentSettings extends Model
             'nowpayments_ipn_secret' => 'encrypted',
             'nowpayments_enabled' => 'boolean',
             'nowpayments_rub_verified' => 'boolean',
+            'default_panel_id' => 'integer',
         ];
+    }
+
+    public function defaultPanel(): BelongsTo
+    {
+        return $this->belongsTo(Panel::class, 'default_panel_id');
     }
 
     public static function current(): self

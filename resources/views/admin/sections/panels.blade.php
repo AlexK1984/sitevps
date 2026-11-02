@@ -1,6 +1,23 @@
 <section class="admin-section">
     <div class="section-heading"><div><span class="eyebrow">СЕРВЕРЫ ДОСТУПА</span><h2>Панели 3x-ui</h2></div></div>
     <p class="muted">Панельный пароль хранится в зашифрованном виде и не отображается повторно. Используйте адрес с HTTPS.</p>
+    <form class="panel-card admin-form" method="post" action="{{ route('admin.panels.default.update') }}">
+        @csrf @method('PUT')
+        <h3>Панель по умолчанию</h3>
+        <p class="muted">Назначается новым пользователям и пользователям без подписки при создании заказа. Существующие подписки автоматически не переносятся.</p>
+        <label>Автоматическое назначение
+            <select name="default_panel_id">
+                <option value="">Выключено</option>
+                @foreach($onlinePanels as $onlinePanel)
+                    <option value="{{ $onlinePanel->id }}" @selected((int) $defaultPanelId === $onlinePanel->id)>{{ $onlinePanel->name }}</option>
+                @endforeach
+            </select>
+        </label>
+        @if($onlinePanels->isEmpty())
+            <p class="muted">Нет панелей со статусом «Онлайн». Сначала проверьте подключение панели.</p>
+        @endif
+        <button class="button button-outline button-full" type="submit">Сохранить</button>
+    </form>
     <div class="admin-grid">
         <form class="panel-card admin-form" method="post" action="{{ route('admin.panels.store') }}">
             @csrf<h3>Добавить панель</h3>

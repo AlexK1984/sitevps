@@ -28,6 +28,7 @@ class AdminAuditLog extends Model
             'user_soft_deleted' => 'Пользователь мягко удалён',
             'user_access_sync_failed' => 'Не удалось изменить доступ на панели',
             'user_panel_assigned' => 'Назначена панель',
+            'default_panel_updated' => 'Изменена панель по умолчанию',
             'subscription_sync_failed' => 'Ошибка синхронизации подписки',
             'homepage_content_updated' => 'Обновлена главная страница',
             'seo_settings_updated' => 'Обновлены SEO-настройки',
