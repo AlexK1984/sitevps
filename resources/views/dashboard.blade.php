@@ -4,7 +4,7 @@
 
 @section('content')
 <section class="dashboard-head">
-    <div><span class="eyebrow">ЛИЧНЫЙ КАБИНЕТ</span><h1>Здравствуйте, {{ $user->name }}</h1><p>Управляйте подпиской, оплатами и Telegram-привязкой.</p></div>
+    <div><span class="eyebrow">ЛИЧНЫЙ КАБИНЕТ</span><h1>Здравствуйте, {{ $user->name }}</h1><p>Управляйте подпиской, оплатами и Telegram-привязкой.</p><a href="{{ route('account.security') }}">Безопасность и пароль →</a></div>
     @if($user->is_admin)<a class="button button-outline" href="{{ route('admin.index') }}">Открыть админ-панель →</a>@endif
 </section>
 
@@ -72,6 +72,15 @@
                     @unless($yookassaAvailable || $nowPaymentsAvailable)
                         <p class="muted">Оплата через сайт временно недоступна.</p>
                     @endunless
+                    @if($testPaymentEnabled)
+                        <form method="post" action="{{ route('payments.test', $tariff) }}">
+                            @csrf
+                            <input type="hidden" name="idempotency_key" value="{{ $testPaymentIdempotencyKeys[$tariff->id] }}">
+                            <p class="notice">Тестовая оплата — без списания и без вызова платёжного провайдера. После подтверждения теста будет реально выдан или изменён доступ на назначенной панели, по тем же правилам срока и трафика.</p>
+                            <button class="button button-outline button-full" type="submit" @disabled(! $user->assigned_panel_id)>TEST · Симулировать оплату без списания</button>
+                            @unless($user->assigned_panel_id)<p class="muted">Сначала администратор должен назначить панель.</p>@endunless
+                        </form>
+                    @endif
                 </article>
             @endforeach
         </div>
@@ -82,7 +91,7 @@
     <div class="section-heading"><div><span class="eyebrow">ИСТОРИЯ</span><h2>Последние заказы</h2></div></div>
     <div class="table-wrap"><table><thead><tr><th>Тариф</th><th>Сумма</th><th>Статус</th><th>Дата</th><th></th></tr></thead><tbody>
         @forelse($orders as $order)
-            <tr><td>{{ $order->tariff->name }}<br><small>{{ $order->subscriptionActionLabel() }}</small></td><td>{{ $order->paidAmountLabel() }}<br><small>{{ $order->paymentMethodLabel() }}</small></td><td><span class="status-pill">{{ $order->statusLabel() }}</span></td><td>{{ $order->created_at->format('d.m.Y H:i') }}</td><td>@if($order->status === 'pending' && $order->payment_url)<a href="{{ $order->payment_url }}" target="_blank" rel="noopener noreferrer">Продолжить оплату →</a>@endif</td></tr>
+            <tr><td>{{ $order->tariff->name }}@if($order->is_test)<br><span class="status-pill">TEST</span>@endif<br><small>{{ $order->subscriptionActionLabel() }}</small></td><td>{{ $order->paidAmountLabel() }}<br><small>{{ $order->paymentMethodLabel() }}</small></td><td><span class="status-pill">{{ $order->statusLabel() }}</span></td><td>{{ $order->created_at->format('d.m.Y H:i') }}</td><td>@if($order->status === 'pending' && $order->payment_url)<a href="{{ $order->payment_url }}" target="_blank" rel="noopener noreferrer">Продолжить оплату →</a>@endif</td></tr>
         @empty
             <tr><td colspan="5" class="empty-cell">Заказов пока нет.</td></tr>
         @endforelse

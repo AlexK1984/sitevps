@@ -2,12 +2,14 @@
 
 namespace App\Http\Controllers;
 
+use App\Exceptions\InternalTestPaymentException;
 use App\Exceptions\PaymentGatewayException;
 use App\Jobs\ProvisionSubscription;
 use App\Models\Order;
 use App\Models\PaymentSettings;
 use App\Models\Tariff;
 use App\Services\CheckoutService;
+use App\Services\InternalTestPaymentService;
 use App\Services\NowPaymentsCheckoutService;
 use App\Services\NowPaymentsClient;
 use App\Services\PaymentEventLogger;
@@ -19,6 +21,37 @@ use Illuminate\Support\Facades\DB;
 
 class PaymentController extends Controller
 {
+    public function createTestPayment(
+        Request $request,
+        Tariff $tariff,
+        InternalTestPaymentService $testPayments,
+    ): RedirectResponse {
+        abort_unless(PaymentSettings::current()->internal_test_payments_enabled, 404);
+        abort_unless($tariff->is_active, 404);
+
+        $validated = $request->validate([
+            'idempotency_key' => ['required', 'uuid'],
+        ]);
+
+        try {
+            [$order, $created] = $testPayments->simulateForCustomer(
+                $request->user(),
+                $tariff,
+                $validated['idempotency_key'],
+            );
+        } catch (InternalTestPaymentException $exception) {
+            return back()->withErrors(['test_payment' => $exception->getMessage()]);
+        }
+
+        if ($created) {
+            ProvisionSubscription::dispatch($order->id);
+        }
+
+        return back()->with('status', $created
+            ? 'Тестовый заказ создан и передан в обычную очередь выдачи на назначенной панели.'
+            : 'Этот тестовый запрос уже был обработан; повторная выдача не запускалась.');
+    }
+
     public function create(Request $request, Tariff $tariff, CheckoutService $checkout): RedirectResponse
     {
         return $this->createYooKassaCheckout($request, $tariff, $checkout);

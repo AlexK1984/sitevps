@@ -10,9 +10,6 @@
             <input type="hidden" name="telegram_stars_enabled" value="0">
             <label class="checkbox"><input type="checkbox" name="telegram_stars_enabled" value="1" @checked($paymentSettings->telegram_stars_enabled)> Разрешить Telegram Stars в боте</label>
             <p class="muted">Токен бота задаётся выше или в .env; секрет webhook остаётся в .env. Для каждого тарифа укажите цену в Stars ниже.</p>
-            <input type="hidden" name="internal_test_payments_enabled" value="0">
-            <label class="checkbox"><input type="checkbox" name="internal_test_payments_enabled" value="1" @checked($paymentSettings->internal_test_payments_enabled)> Разрешить внутреннюю тестовую оплату</label>
-            <p class="notice">ВНИМАНИЕ: тестовая симуляция не обращается к ЮKassa или Telegram и не списывает деньги, но создаёт оплаченный заказ и выдаёт/продлевает реальный доступ на назначенной панели. Тестовые заказы будут помечены «TEST».</p>
             <input type="hidden" name="nowpayments_enabled" value="0">
             <label class="checkbox"><input type="checkbox" name="nowpayments_enabled" value="1" @checked($paymentSettings->nowpayments_enabled)> Разрешить оплату через NOWPayments</label>
             <p class="muted">Включение доступно только после сохранения реквизитов и проверки поддержки RUB через API NOWPayments.</p>

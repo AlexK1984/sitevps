@@ -22,11 +22,16 @@ class DashboardController extends Controller
     ): View {
         $user = $request->user();
         $paymentSettings = PaymentSettings::current();
+        $tariffs = Tariff::query()->where('is_active', true)->orderBy('price_kopecks')->get();
 
         return view('dashboard', [
             'user' => $user,
             'siteContent' => SiteContent::current(),
-            'tariffs' => Tariff::query()->where('is_active', true)->orderBy('price_kopecks')->get(),
+            'tariffs' => $tariffs,
+            'testPaymentEnabled' => $paymentSettings->internal_test_payments_enabled,
+            'testPaymentIdempotencyKeys' => $tariffs->mapWithKeys(
+                fn (Tariff $tariff): array => [$tariff->id => (string) Str::uuid()],
+            ),
             'subscription' => $user->subscription()->with(['panel', 'tariff'])->first(),
             'orders' => $user->orders()->with('tariff')->latest()->limit(10)->get(),
             'telegramBotName' => config('services.telegram.bot_name'),

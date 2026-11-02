@@ -75,6 +75,15 @@
 </form>
 
 <section class="admin-section">
+    <div class="section-heading"><div><span class="eyebrow">ВОССТАНОВЛЕНИЕ ДОСТУПА</span><h2>Сброс пароля по email</h2></div></div>
+    <p class="muted">Отправьте пользователю стандартную одноразовую ссылку сброса пароля. Пароль не просматривается и не задаётся администратором; ссылка действует 60 минут и отправляется через настроенную SMTP-почту.</p>
+    <form method="post" action="{{ route('admin.users.password-reset', $user) }}">
+        @csrf
+        <button class="button button-outline" type="submit">Отправить ссылку сброса пароля</button>
+    </form>
+</section>
+
+<section class="admin-section">
     <div class="section-heading"><div><span class="eyebrow">ИСТОРИЯ ЗАКАЗОВ</span><h2>Последние заказы пользователя</h2></div></div>
     <div class="table-wrap"><table><thead><tr><th>Дата</th><th>Тариф</th><th>Сумма</th><th>Статус</th></tr></thead><tbody>
         @forelse($userOrders as $order)

@@ -25,6 +25,7 @@
                 <a class="admin-nav-link" href="{{ route('admin.site') }}" @if(request()->routeIs('admin.site')) aria-current="page" @endif>Главная страница</a>
                 <a class="admin-nav-link" href="{{ route('admin.seo') }}" @if(request()->routeIs('admin.seo')) aria-current="page" @endif>SEO</a>
                 <a class="admin-nav-link" href="{{ route('admin.payment-settings') }}" @if(request()->routeIs('admin.payment-settings')) aria-current="page" @endif>Оплаты</a>
+                <a class="admin-nav-link" href="{{ route('admin.test-payments') }}" @if(request()->routeIs('admin.test-payments')) aria-current="page" @endif>Тестовые оплаты</a>
                 <a class="admin-nav-link" href="{{ route('admin.mail-settings') }}" @if(request()->routeIs('admin.mail-settings')) aria-current="page" @endif>Почта и SMTP</a>
                 <a class="admin-nav-link" href="{{ route('admin.system') }}" @if(request()->routeIs('admin.system')) aria-current="page" @endif>Система и аудит</a>
             </div>

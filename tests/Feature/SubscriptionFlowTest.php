@@ -369,9 +369,9 @@ class SubscriptionFlowTest extends TestCase
         $admin = User::factory()->create(['is_admin' => true]);
         $customer = User::factory()->create();
 
-        $this->actingAs($admin)->get('/admin/payment-settings')
+        $this->actingAs($admin)->get('/admin/test-payments')
             ->assertOk()
-            ->assertSee('внутреннюю тестовую оплату')
+            ->assertSee('Разрешить пользователям создавать тестовые оплаты')
             ->assertDontSee('Создать заказ TEST и выдать реальный доступ');
 
         $payload = [
@@ -382,6 +382,9 @@ class SubscriptionFlowTest extends TestCase
 
         $this->actingAs($customer)->post('/admin/payments/test', $payload)->assertForbidden();
         $this->actingAs($admin)->post('/admin/payments/test', $payload)->assertNotFound();
+        $this->actingAs($customer)->post(route('payments.test', $tariff), [
+            'idempotency_key' => (string) Str::uuid(),
+        ])->assertNotFound();
         $this->assertDatabaseCount('orders', 0);
         $this->assertDatabaseCount('payment_events', 0);
     }
@@ -396,13 +399,11 @@ class SubscriptionFlowTest extends TestCase
         $tariff = $this->createTariff();
         $key = (string) Str::uuid();
 
-        $this->actingAs($admin)->put('/admin/payment-settings', [
-            'yookassa_enabled' => '1',
-            'telegram_stars_enabled' => '0',
-            'internal_test_payments_enabled' => '1',
+        $this->actingAs($admin)->put('/admin/test-payments', [
+            'enabled' => '1',
         ])->assertRedirect();
 
-        $this->actingAs($admin)->get('/admin/orders')
+        $this->actingAs($admin)->get('/admin/test-payments')
             ->assertOk()
             ->assertSee('Платёжный провайдер не вызывается, списания нет.')
             ->assertSee('Создать заказ TEST и выдать реальный доступ');
@@ -477,6 +478,99 @@ class SubscriptionFlowTest extends TestCase
         ]);
         $this->assertDatabaseCount('subscriptions', 1);
         Http::assertNothingSent();
+    }
+
+    public function test_customer_test_payment_is_admin_gated_test_labeled_and_replaces_active_tariff_without_provider_calls(): void
+    {
+        Queue::fake();
+        Http::fake();
+        $panel = $this->createPanel('Panel');
+        $user = User::factory()->create(['assigned_panel_id' => $panel->id]);
+        $oldTariff = $this->createTariff();
+        $newTariff = Tariff::query()->create([
+            'name' => 'Quarterly',
+            'slug' => 'quarterly',
+            'price_kopecks' => 2599,
+            'duration_days' => 90,
+            'traffic_gb' => 250,
+            'connection_limit' => 5,
+            'is_active' => true,
+        ]);
+        $originalExpiry = now()->addDays(17);
+        $subscription = Subscription::query()->create([
+            'user_id' => $user->id,
+            'tariff_id' => $oldTariff->id,
+            'panel_id' => $panel->id,
+            'client_uuid' => (string) Str::uuid(),
+            'sub_id' => 'UserTestReplace123',
+            'client_email' => 'user-test-replace@sitevps',
+            'expires_at' => $originalExpiry,
+            'traffic_limit_bytes' => 410_000_000_000,
+            'connection_limit' => 2,
+            'status' => 'active',
+        ]);
+
+        $this->actingAs($user)->get('/dashboard')
+            ->assertOk()
+            ->assertSee('Безопасность и пароль')
+            ->assertDontSee('TEST · Симулировать оплату без списания');
+
+        $admin = User::factory()->create(['is_admin' => true]);
+        $this->actingAs($admin)
+            ->put(route('admin.test-payments.update'), ['enabled' => '1'])
+            ->assertRedirect();
+        $this->assertTrue(PaymentSettings::current()->fresh()->internal_test_payments_enabled);
+        $this->actingAs($admin)->put('/admin/payment-settings', [
+            'yookassa_enabled' => '1',
+            'telegram_stars_enabled' => '0',
+        ])->assertRedirect();
+        $this->assertTrue(PaymentSettings::current()->fresh()->internal_test_payments_enabled);
+
+        $this->actingAs($user)->get('/dashboard')
+            ->assertOk()
+            ->assertSee('TEST · Симулировать оплату без списания')
+            ->assertSee('Тестовая оплата — без списания и без вызова платёжного провайдера.')
+            ->assertSee('остаток срока и трафика не переносятся');
+
+        $key = (string) Str::uuid();
+        $this->post(route('payments.test', $newTariff), ['idempotency_key' => $key])
+            ->assertRedirect()
+            ->assertSessionHas('status', 'Тестовый заказ создан и передан в обычную очередь выдачи на назначенной панели.');
+
+        $order = Order::query()->where('test_idempotency_key', $key)->firstOrFail();
+        $this->assertSame($user->id, $order->user_id);
+        $this->assertSame('replacement', $order->subscription_action);
+        $this->assertTrue($order->is_test);
+        $this->assertSame('internal_test', $order->payment_method);
+        $this->assertSame('TEST · внутренняя симуляция', $order->paymentMethodLabel());
+        $this->assertSame('TEST · без списания', $order->paidAmountLabel());
+        $this->assertSame('paid_unassigned', $order->status);
+        $this->assertNull($order->payment_id);
+        $this->assertNull($order->payment_url);
+        $this->assertDatabaseHas('subscriptions', [
+            'id' => $subscription->id,
+            'tariff_id' => $oldTariff->id,
+            'expires_at' => $originalExpiry->toDateTimeString(),
+            'traffic_limit_bytes' => 410_000_000_000,
+        ]);
+        $this->assertDatabaseHas('payment_events', [
+            'order_id' => $order->id,
+            'actor_id' => $user->id,
+            'event_type' => 'test_simulated',
+            'provider' => 'internal_test',
+        ]);
+        $this->assertDatabaseHas('admin_audit_logs', [
+            'actor_id' => $admin->id,
+            'action' => 'test_payment_feature_toggled',
+        ]);
+        Queue::assertPushed(ProvisionSubscription::class, 1);
+        Http::assertNothingSent();
+
+        $this->actingAs($admin)->put(route('admin.test-payments.update'), ['enabled' => '0'])
+            ->assertRedirect();
+        $this->actingAs($user)->post(route('payments.test', $newTariff), ['idempotency_key' => (string) Str::uuid()])
+            ->assertNotFound();
+        $this->assertDatabaseCount('orders', 1);
     }
 
     public function test_admin_credentials_are_encrypted_and_never_returned_to_the_browser(): void

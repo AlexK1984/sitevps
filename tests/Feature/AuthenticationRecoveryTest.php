@@ -175,6 +175,57 @@ class AuthenticationRecoveryTest extends TestCase
         ])->assertSessionHasErrors('email');
     }
 
+    public function test_authenticated_user_can_change_password_only_after_confirming_current_password(): void
+    {
+        $user = User::factory()->create(['remember_token' => 'previous-remember-token']);
+
+        $this->actingAs($user)->get(route('account.security'))
+            ->assertOk()
+            ->assertSee('name="current_password"', false)
+            ->assertSee('name="password_confirmation"', false)
+            ->assertDontSee('previous-remember-token');
+
+        $this->put(route('account.password.update'), [
+            'current_password' => 'incorrect-current-password',
+            'password' => 'new-secure-password',
+            'password_confirmation' => 'new-secure-password',
+        ])->assertSessionHasErrors('current_password');
+
+        $this->assertTrue(Hash::check('password', $user->fresh()->password));
+        $this->assertSame('previous-remember-token', $user->fresh()->remember_token);
+
+        $this->put(route('account.password.update'), [
+            'current_password' => 'password',
+            'password' => 'new-secure-password',
+            'password_confirmation' => 'new-secure-password',
+        ])->assertRedirect(route('account.security'))
+            ->assertSessionHas('status', 'Пароль изменён.');
+
+        $this->assertAuthenticatedAs($user);
+        $this->assertTrue(Hash::check('new-secure-password', $user->fresh()->password));
+        $this->assertNotSame('previous-remember-token', $user->fresh()->remember_token);
+    }
+
+    public function test_password_change_route_is_rate_limited(): void
+    {
+        $user = User::factory()->create();
+        $this->actingAs($user);
+
+        for ($attempt = 0; $attempt < 5; $attempt++) {
+            $this->put(route('account.password.update'), [
+                'current_password' => 'wrong-password',
+                'password' => 'new-secure-password',
+                'password_confirmation' => 'new-secure-password',
+            ])->assertSessionHasErrors('current_password');
+        }
+
+        $this->put(route('account.password.update'), [
+            'current_password' => 'wrong-password',
+            'password' => 'new-secure-password',
+            'password_confirmation' => 'new-secure-password',
+        ])->assertTooManyRequests();
+    }
+
     public function test_password_reset_requests_are_rate_limited_by_ip(): void
     {
         config([

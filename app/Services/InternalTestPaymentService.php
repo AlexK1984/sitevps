@@ -14,14 +14,34 @@ class InternalTestPaymentService
 {
     public function __construct(private readonly PaymentEventLogger $events) {}
 
-    public function simulate(User $user, Tariff $tariff, User $admin, string $idempotencyKey): array
+    public function simulateForCustomer(User $user, Tariff $tariff, string $idempotencyKey): array
     {
-        return DB::transaction(function () use ($user, $tariff, $admin, $idempotencyKey): array {
+        return $this->simulate($user, $tariff, $user, $idempotencyKey, customerInitiated: true);
+    }
+
+    public function simulate(
+        User $user,
+        Tariff $tariff,
+        User $actor,
+        string $idempotencyKey,
+        bool $customerInitiated = false,
+    ): array {
+        return DB::transaction(function () use ($user, $tariff, $actor, $idempotencyKey, $customerInitiated): array {
             $settings = PaymentSettings::query()->whereKey(1)->lockForUpdate()->first();
 
             if (! $settings?->internal_test_payments_enabled) {
                 throw new InternalTestPaymentException('Внутренний тестовый режим выключен.');
             }
+
+            $user = User::query()->lockForUpdate()->findOrFail($user->id);
+            $tariff = Tariff::query()->lockForUpdate()->findOrFail($tariff->id);
+            if ($customerInitiated && ! $user->is_active) {
+                throw new InternalTestPaymentException('Учётная запись отключена.');
+            }
+
+            $subscription = $user->subscription()->lockForUpdate()->first();
+            $isReplacement = ($subscription?->isActive() ?? false)
+                && $subscription->tariff_id !== $tariff->id;
 
             $existingOrder = Order::query()
                 ->where('test_idempotency_key', $idempotencyKey)
@@ -48,6 +68,7 @@ class InternalTestPaymentService
                 'amount_kopecks' => $tariff->price_kopecks,
                 'status' => 'paid_unassigned',
                 'paid_at' => now(),
+                'subscription_action' => $isReplacement ? 'replacement' : 'renewal',
                 'payment_method' => 'internal_test',
                 'payment_currency' => 'TST',
                 'payment_amount_units' => null,
@@ -58,9 +79,11 @@ class InternalTestPaymentService
             $this->events->record(
                 'internal_test',
                 'test_simulated',
-                'Тестовая оплата создана администратором; запускается обычная выдача на назначенной панели без обращения к платёжному провайдеру.',
+                $customerInitiated
+                    ? 'Тестовая оплата создана пользователем; запускается обычная выдача на назначенной панели без обращения к платёжному провайдеру.'
+                    : 'Тестовая оплата создана администратором; запускается обычная выдача на назначенной панели без обращения к платёжному провайдеру.',
                 $order,
-                $admin->id,
+                $actor->id,
                 'pending',
                 'paid_unassigned',
                 'test-simulation:'.$idempotencyKey,

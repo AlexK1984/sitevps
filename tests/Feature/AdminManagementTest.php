@@ -3,17 +3,21 @@
 namespace Tests\Feature;
 
 use App\Exceptions\PanelApiException;
+use App\Models\AdminAuditLog;
 use App\Models\Order;
 use App\Models\Panel;
+use App\Models\PaymentSettings;
 use App\Models\SiteContent;
 use App\Models\Subscription;
 use App\Models\Tariff;
 use App\Models\User;
+use App\Notifications\PasswordResetNotification;
 use App\Services\ThreeXUiClient;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request as ClientRequest;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Str;
 use Mockery;
 use Tests\TestCase;
@@ -62,6 +66,7 @@ class AdminManagementTest extends TestCase
             'admin.orders' => 'Заказы и платежи',
             'admin.payment-events' => 'Журнал платёжных событий',
             'admin.payment-settings' => 'Настройки оплат',
+            'admin.test-payments' => 'Тестовые оплаты',
             'admin.mail-settings' => 'Настройки SMTP',
             'admin.site' => 'Главная страница',
             'admin.seo' => 'SEO и социальная информация',
@@ -76,6 +81,60 @@ class AdminManagementTest extends TestCase
                 ->assertSee('aria-current="page"', false)
                 ->assertSee('aria-label="Разделы администрирования"', false);
         }
+
+    }
+
+    public function test_admin_can_request_a_private_one_time_password_reset_email_for_a_user(): void
+    {
+        Notification::fake();
+        $admin = User::factory()->create(['is_admin' => true]);
+        $user = User::factory()->create(['email' => 'reset-target@example.test']);
+        PaymentSettings::current()->update([
+            'smtp_enabled' => true,
+            'smtp_host' => 'smtp.admin.example.test',
+            'smtp_port' => 587,
+            'smtp_encryption' => 'tls',
+            'smtp_from_address' => 'reset@example.test',
+            'smtp_from_name' => 'VPN service',
+        ]);
+
+        $this->actingAs($admin)->get(route('admin.users.edit', $user))
+            ->assertOk()
+            ->assertSee(route('admin.users.password-reset', $user), false)
+            ->assertDontSee('name="password"', false)
+            ->assertDontSee('name="current_password"', false);
+
+        $response = $this->post(route('admin.users.password-reset', $user))
+            ->assertRedirect()
+            ->assertSessionHas('status');
+
+        Notification::assertSentTo($user, PasswordResetNotification::class);
+        $notification = Notification::sent($user, PasswordResetNotification::class)->first();
+        $token = (string) parse_url($notification->toMail($user)->actionUrl, PHP_URL_FRAGMENT);
+        $this->assertNotSame('', $token);
+        $this->assertStringNotContainsString($token, (string) $response->getContent());
+        $this->assertDatabaseHas('admin_audit_logs', [
+            'actor_id' => $admin->id,
+            'subject_user_id' => $user->id,
+            'action' => 'user_password_reset_requested',
+        ]);
+        $audit = AdminAuditLog::query()->where('action', 'user_password_reset_requested')->firstOrFail();
+        $this->assertStringNotContainsString($token, $audit->summary);
+        $this->assertSame('Сброс пароля', $notification->toMail($user)->subject);
+    }
+
+    public function test_admin_password_reset_requires_configured_mail_and_does_not_store_a_token(): void
+    {
+        Notification::fake();
+        $admin = User::factory()->create(['is_admin' => true]);
+        $user = User::factory()->create();
+
+        $this->actingAs($admin)->post(route('admin.users.password-reset', $user))
+            ->assertRedirect()
+            ->assertSessionHasErrors('password_reset');
+
+        $this->assertDatabaseCount('password_reset_tokens', 0);
+        Notification::assertNothingSent();
     }
 
     public function test_admin_can_update_seo_from_its_dedicated_page(): void

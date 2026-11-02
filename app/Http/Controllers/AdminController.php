@@ -27,6 +27,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Notification;
+use Illuminate\Support\Facades\Password;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
@@ -72,6 +73,8 @@ class AdminController extends Controller
             'panels' => ['panels' => Panel::query()->orderBy('name')->get()],
             'orders' => [
                 'orders' => Order::query()->with(['user', 'tariff', 'panel'])->latest()->limit(100)->get(),
+            ],
+            'test-payments' => [
                 'testPaymentUsers' => User::query()->whereNotNull('assigned_panel_id')->orderBy('email')->get(['id', 'email']),
                 'testPaymentTariffs' => Tariff::query()->where('is_active', true)->orderBy('id')->get(['id', 'name']),
                 'testPaymentIdempotencyKey' => (string) Str::uuid(),
@@ -500,13 +503,10 @@ class AdminController extends Controller
             'yookassa_enabled' => ['required', 'boolean'],
             'telegram_stars_enabled' => ['required', 'boolean'],
             'nowpayments_enabled' => ['sometimes', 'boolean'],
-            'internal_test_payments_enabled' => ['sometimes', 'boolean'],
         ]);
 
         $settings = PaymentSettings::current();
         $wasNowPaymentsEnabled = $settings->nowpayments_enabled;
-        $wasTestModeEnabled = $settings->internal_test_payments_enabled;
-        $validated['internal_test_payments_enabled'] = $request->boolean('internal_test_payments_enabled');
         if (array_key_exists('nowpayments_enabled', $validated)) {
             $enableNowPayments = $request->boolean('nowpayments_enabled');
             if ($enableNowPayments && ! $settings->nowpaymentsConfiguredInAdmin()) {
@@ -533,18 +533,89 @@ class AdminController extends Controller
             ]);
         }
 
-        if ($wasTestModeEnabled !== $settings->internal_test_payments_enabled) {
-            app(PaymentEventLogger::class)->record(
-                'internal_test',
-                $settings->internal_test_payments_enabled ? 'test_mode_enabled' : 'test_mode_disabled',
-                $settings->internal_test_payments_enabled
-                    ? 'Администратор включил внутренний тестовый режим. Симуляция выдаёт реальный доступ на назначенной панели.'
-                    : 'Администратор выключил внутренний тестовый режим.',
-                actorId: $request->user()->id,
-            );
+        return back()->with('status', 'Настройки способов оплаты сохранены.');
+    }
+
+    public function updateTestPaymentSettings(Request $request): RedirectResponse
+    {
+        $validated = $request->validate(['enabled' => ['required', 'boolean']]);
+        $enabled = $request->boolean('enabled');
+        PaymentSettings::current();
+
+        DB::transaction(function () use ($request, $enabled): void {
+            $settings = PaymentSettings::query()->whereKey(1)->lockForUpdate()->firstOrFail();
+            $wasEnabled = $settings->internal_test_payments_enabled;
+            $settings->update(['internal_test_payments_enabled' => $enabled]);
+
+            if ($wasEnabled !== $enabled) {
+                AdminAuditLog::query()->create([
+                    'actor_id' => $request->user()->id,
+                    'action' => 'test_payment_feature_toggled',
+                    'summary' => $enabled
+                        ? 'Включена тестовая оплата для личного кабинета; симуляция выдаёт реальный доступ на назначенной панели.'
+                        : 'Тестовая оплата в личном кабинете выключена.',
+                ]);
+                app(PaymentEventLogger::class)->record(
+                    'internal_test',
+                    $enabled ? 'test_mode_enabled' : 'test_mode_disabled',
+                    $enabled
+                        ? 'Администратор включил внутренний тестовый режим.'
+                        : 'Администратор выключил внутренний тестовый режим.',
+                    actorId: $request->user()->id,
+                );
+            }
+        });
+
+        return back()->with('status', 'Настройка тестовой оплаты сохранена.');
+    }
+
+    public function sendUserPasswordReset(
+        Request $request,
+        User $user,
+        RuntimeMailSettings $mailSettings,
+    ): RedirectResponse {
+        if (! $mailSettings->configure()) {
+            return back()->withErrors([
+                'password_reset' => 'Почта не настроена или недоступна. Настройте SMTP в админ-панели и повторите запрос.',
+            ]);
         }
 
-        return back()->with('status', 'Настройки способов оплаты сохранены.');
+        try {
+            $status = Password::sendResetLink(['email' => $user->email]);
+        } catch (TransportExceptionInterface $exception) {
+            DB::table(config('auth.passwords.users.table'))
+                ->where('email', $user->email)
+                ->delete();
+
+            Log::warning('Admin-triggered password reset email delivery failed.', [
+                'exception_class' => $exception::class,
+            ]);
+
+            return back()->withErrors([
+                'password_reset' => 'Не удалось отправить письмо. Проверьте настройки SMTP и повторите позже.',
+            ]);
+        }
+
+        if ($status === Password::RESET_THROTTLED) {
+            return back()->withErrors([
+                'password_reset' => 'Ссылка для пользователя уже недавно запрашивалась. Повторите позже.',
+            ]);
+        }
+
+        if ($status !== Password::RESET_LINK_SENT) {
+            return back()->withErrors([
+                'password_reset' => 'Не удалось создать ссылку сброса пароля. Проверьте почту и повторите позже.',
+            ]);
+        }
+
+        AdminAuditLog::query()->create([
+            'actor_id' => $request->user()->id,
+            'subject_user_id' => $user->id,
+            'action' => 'user_password_reset_requested',
+            'summary' => 'Администратор запросил отправку одноразовой ссылки сброса пароля на адрес пользователя.',
+        ]);
+
+        return back()->with('status', 'Одноразовая ссылка для сброса пароля отправлена пользователю по настроенной почте.');
     }
 
     public function verifyNowPaymentsRuble(

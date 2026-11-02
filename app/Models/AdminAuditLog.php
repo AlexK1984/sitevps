@@ -36,6 +36,8 @@ class AdminAuditLog extends Model
             'nowpayments_checkout_toggled' => 'Изменён статус криптооплаты',
             'nowpayments_rub_verified' => 'Проверена валюта RUB',
             'nowpayments_rub_verification_failed' => 'Не пройдена проверка валюты RUB',
+            'test_payment_feature_toggled' => 'Изменена доступность тестовых оплат',
+            'user_password_reset_requested' => 'Запрошен сброс пароля пользователя',
             default => 'Административное изменение',
         };
     }

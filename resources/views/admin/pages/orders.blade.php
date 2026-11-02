@@ -8,5 +8,4 @@
     <a class="button button-outline" href="{{ route('home') }}">На сайт →</a>
 </section>
 @include('admin.sections.orders')
-@include('admin.sections.test-payment')
 @endsection

@@ -27,7 +27,7 @@
             'inLanguage' => 'ru-RU',
         ], JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_AMP | JSON_HEX_QUOT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) !!}</script>
     @endif
-    @if(request()->routeIs('admin.*') || request()->is('dashboard', 'login', 'register', 'forgot-password', 'reset-password/*'))
+    @if(request()->routeIs('admin.*', 'account.*') || request()->is('dashboard', 'login', 'register', 'forgot-password', 'reset-password/*'))
         <meta name="robots" content="noindex,nofollow">
     @endif
     @stack('head')
@@ -39,6 +39,7 @@
     <nav>
         @auth
             <a href="{{ route('dashboard') }}">Личный кабинет</a>
+            <a href="{{ route('account.security') }}">Безопасность</a>
             @if(auth()->user()->is_admin)
                 <a href="{{ route('admin.index') }}">Администрирование</a>
             @endif
