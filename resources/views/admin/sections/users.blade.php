@@ -11,7 +11,19 @@
                 <td>{{ $user->email }}</td>
                 <td><span class="status-pill {{ $user->is_active ? 'status-active' : 'status-offline' }}">{{ $user->is_active ? 'Активна' : 'Отключена' }}</span></td>
                 <td>{{ $user->assignedPanel?->name ?? 'Не назначена' }}</td>
-                <td><a class="button button-small button-outline" href="{{ route('admin.users.edit', $user) }}">Редактировать</a></td>
+                <td>
+                    <a class="button button-small button-outline" href="{{ route('admin.users.edit', $user) }}">Редактировать</a>
+                    @if($user->id !== auth()->id())
+                        <form class="admin-inline-action" method="post" action="{{ route($user->is_active ? 'admin.users.ban' : 'admin.users.restore', $user) }}">
+                            @csrf
+                            <button class="button button-small {{ $user->is_active ? 'button-danger' : 'button-outline' }}" type="submit">{{ $user->is_active ? 'Забанить' : 'Снять бан' }}</button>
+                        </form>
+                        <form class="admin-inline-action" method="post" action="{{ route('admin.users.delete', $user) }}" onsubmit="return confirm('Мягко удалить пользователя? Вход будет запрещён, заказы и платёжная история сохранятся.')">
+                            @csrf @method('DELETE')
+                            <button class="button button-small button-danger" type="submit">Мягко удалить</button>
+                        </form>
+                    @endif
+                </td>
             </tr>
         @endforeach
     </tbody></table></div>

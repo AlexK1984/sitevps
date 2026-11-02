@@ -165,6 +165,21 @@ class ThreeXUiClient
 
     public function provision(Panel $panel, Subscription $subscription): void
     {
+        $this->writeClient($panel, $subscription, enabled: true, update: false);
+    }
+
+    public function update(Panel $panel, Subscription $subscription): void
+    {
+        $this->writeClient($panel, $subscription, enabled: true, update: true);
+    }
+
+    public function setEnabled(Panel $panel, Subscription $subscription, bool $enabled): void
+    {
+        $this->writeClient($panel, $subscription, $enabled, update: true);
+    }
+
+    private function writeClient(Panel $panel, Subscription $subscription, bool $enabled, bool $update): void
+    {
         $cookies = new CookieJar;
         $baseUrl = rtrim($panel->base_url, '/');
 
@@ -204,9 +219,10 @@ class ThreeXUiClient
         if (! is_array($inboundsPayload['obj'] ?? null)) {
             throw new PanelApiException('Панель 3x-ui вернула некорректный список inbound.');
         }
-        $inboundIds = $this->supportedInboundIds($inboundsPayload['obj']);
+        $inboundIds = $this->supportedInboundIds($inboundsPayload['obj'], onlyEnabled: $update ? false : true);
         if ($inboundIds === []) {
-            throw new PanelApiException('Не найдены активные inbound VLESS, VMess, Trojan или Shadowsocks для выдачи.');
+            $availability = $update ? 'inbound' : 'активные inbound';
+            throw new PanelApiException("Не найдены {$availability} VLESS, VMess, Trojan или Shadowsocks для клиента.");
         }
 
         foreach ($inboundIds as $inboundId) {
@@ -225,7 +241,7 @@ class ThreeXUiClient
             'id' => $subscription->client_uuid,
             'subId' => $subscription->sub_id,
             'email' => $subscription->client_email,
-            'enable' => true,
+            'enable' => $enabled,
             'limitIp' => $subscription->connection_limit,
             'totalGB' => $subscription->traffic_limit_bytes,
             'expiryTime' => $subscription->expires_at?->getTimestampMs() ?? 0,
@@ -233,37 +249,46 @@ class ThreeXUiClient
             'reset' => 0,
         ];
 
+        $operation = $update ? 'обновить клиента' : 'создать клиента';
+
         try {
             $headers = ['X-Requested-With' => 'XMLHttpRequest'];
             if ($csrfToken !== null) {
                 $headers['X-CSRF-Token'] = $csrfToken;
             }
 
-            $response = Http::withOptions(['cookies' => $cookies])
+            $request = Http::withOptions(['cookies' => $cookies])
                 ->withHeaders($headers)
                 ->acceptJson()
                 ->asJson()
                 ->withoutRedirecting()
-                ->timeout(15)
-                ->post($baseUrl.'/panel/api/clients/add', [
+                ->timeout(15);
+
+            if ($update) {
+                $query = http_build_query(['inboundIds' => implode(',', $inboundIds)]);
+                $url = $baseUrl.'/panel/api/clients/update/'.rawurlencode($subscription->client_email).'?'.$query;
+                $response = $request->post($url, $client);
+            } else {
+                $response = $request->post($baseUrl.'/panel/api/clients/add', [
                     'client' => $client,
                     'inboundIds' => $inboundIds,
                 ]);
+            }
         } catch (ConnectionException $exception) {
-            throw $this->connectionFailure($exception, 'создать или обновить клиента');
+            throw $this->connectionFailure($exception, $operation);
         }
 
-        $this->successfulApiResponse($response, 'создать или обновить клиента');
+        $this->successfulApiResponse($response, $operation);
     }
 
-    private function supportedInboundIds(array $inbounds): array
+    private function supportedInboundIds(array $inbounds, bool $onlyEnabled = true): array
     {
         $supportedProtocols = ['vless', 'vmess', 'trojan', 'shadowsocks'];
 
         return collect($inbounds)
             ->filter(fn ($inbound) => is_array($inbound)
                 && (int) data_get($inbound, 'id') > 0
-                && data_get($inbound, 'enable') === true
+                && (! $onlyEnabled || data_get($inbound, 'enable') === true)
                 && in_array(strtolower((string) data_get($inbound, 'protocol')), $supportedProtocols, true))
             ->map(fn ($inbound) => (int) data_get($inbound, 'id'))
             ->unique()

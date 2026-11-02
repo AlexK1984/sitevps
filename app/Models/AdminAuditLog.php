@@ -23,6 +23,10 @@ class AdminAuditLog extends Model
     {
         return match ($this->action) {
             'user_updated' => 'Пользователь изменён',
+            'user_banned' => 'Пользователь заблокирован',
+            'user_unbanned' => 'Блокировка пользователя снята',
+            'user_soft_deleted' => 'Пользователь мягко удалён',
+            'user_access_sync_failed' => 'Не удалось изменить доступ на панели',
             'user_panel_assigned' => 'Назначена панель',
             'subscription_sync_failed' => 'Ошибка синхронизации подписки',
             'homepage_content_updated' => 'Обновлена главная страница',

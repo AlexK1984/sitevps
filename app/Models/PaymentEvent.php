@@ -60,6 +60,7 @@ class PaymentEvent extends Model
             'provisioning_completed' => 'Доступ выдан',
             'provisioning_retry_requested' => 'Запрошен повтор выдачи',
             'provisioning_waiting_for_panel' => 'Ожидает назначения панели',
+            'provisioning_waiting_for_active_user' => 'Ожидает восстановления аккаунта',
             default => 'Событие обработки платежа',
         };
     }

@@ -36,7 +36,19 @@
         </label>
         <div><span class="field-label">Telegram</span><p>{{ $user->telegram_user_id ? 'Аккаунт привязан' : 'Не привязан' }}</p></div>
     </div>
-    <p class="notice">Отключение блокирует вход в сайт и личный кабинет, но само по себе не отзывает уже выданный конфиг на панели 3x-ui. Пароли здесь не просматриваются и не редактируются.</p>
+    <p class="notice">Блокировка запрещает вход в сайт и отключает VPN-клиента на назначенной панели, если панель подтверждает операцию. Мягкое удаление сохраняет профиль, заказы и платёжную историю для аудита. Пароли здесь не просматриваются и не редактируются.</p>
+    @if($user->id !== auth()->id())
+        <div class="admin-user-actions">
+            <form method="post" action="{{ route($user->is_active ? 'admin.users.ban' : 'admin.users.restore', $user) }}">
+                @csrf
+                <button class="button {{ $user->is_active ? 'button-danger' : 'button-outline' }}" type="submit">{{ $user->is_active ? 'Заблокировать пользователя' : 'Снять блокировку / восстановить' }}</button>
+            </form>
+            <form method="post" action="{{ route('admin.users.delete', $user) }}" onsubmit="return confirm('Мягко удалить пользователя? Вход будет запрещён, а профиль, заказы и платёжная история останутся в системе.')">
+                @csrf @method('DELETE')
+                <button class="button button-danger" type="submit">Мягко удалить</button>
+            </form>
+        </div>
+    @endif
 
     @if($user->subscription)
         <h2>Подписка</h2>
@@ -55,7 +67,7 @@
             <label>Одновременные IP (ориентировочно)<input type="number" name="subscription[connection_limit]" value="{{ old('subscription.connection_limit', $user->subscription->connection_limit) }}" min="1" max="100" required></label>
         </div>
         @if($user->subscription->last_error)<p class="notice notice-error">{{ $user->subscription->last_error }}</p>@endif
-        <p class="muted">Изменения активной подписки синхронизируются с назначенной панелью. Статус оплаты и состояние выдачи не редактируются вручную.</p>
+        <p class="muted">Изменения подписки синхронизируются с назначенной панелью; при отключённой учётной записи клиент остаётся выключенным. Статус оплаты и состояние выдачи не редактируются вручную.</p>
     @else
         <p class="muted">Подписки ещё нет. Создание подписки вручную не выполняется: доступ оформляется только после подтверждения заказа.</p>
     @endif

@@ -19,6 +19,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
     'payment_method',
     'payment_currency',
     'payment_amount_units',
+    'subscription_action',
     'telegram_pre_checkout_id',
     'telegram_pre_checkout_at',
     'paid_at',
@@ -58,7 +59,7 @@ class Order extends Model
             'pending' => 'Ожидает оплаты',
             'payment_failed' => 'Ошибка оплаты',
             'paid_unassigned' => 'Оплачено, ожидает назначения панели',
-            'provisioning' => 'Выдаём доступ',
+            'provisioning' => $this->subscription_action === 'replacement' ? 'Выдаём новый тариф' : 'Выдаём доступ',
             'provisioning_failed' => 'Ошибка выдачи доступа',
             'active' => 'Доступ активирован',
         ][$this->status] ?? $this->status;
@@ -75,6 +76,11 @@ class Order extends Model
             'nowpayments' => 'NOWPayments',
             default => 'ЮKassa',
         };
+    }
+
+    public function subscriptionActionLabel(): string
+    {
+        return $this->subscription_action === 'replacement' ? 'Смена тарифа' : 'Покупка / продление';
     }
 
     public function paidAmountLabel(): string

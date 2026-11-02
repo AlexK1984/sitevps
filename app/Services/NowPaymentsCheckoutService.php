@@ -15,7 +15,7 @@ class NowPaymentsCheckoutService
         private readonly PaymentEventLogger $events,
     ) {}
 
-    public function create(User $user, Tariff $tariff): Order
+    public function create(User $user, Tariff $tariff, bool $replacement = false): Order
     {
         $order = Order::query()->create([
             'reference' => (string) Str::uuid(),
@@ -26,6 +26,7 @@ class NowPaymentsCheckoutService
             'payment_method' => 'nowpayments',
             'payment_currency' => 'RUB',
             'payment_amount_units' => $tariff->price_kopecks,
+            'subscription_action' => $replacement ? 'replacement' : 'renewal',
             'status' => 'pending',
         ]);
 

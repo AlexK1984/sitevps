@@ -2,6 +2,8 @@
 
 namespace Tests\Feature;
 
+use App\Exceptions\PanelApiException;
+use App\Models\Order;
 use App\Models\Panel;
 use App\Models\SiteContent;
 use App\Models\Subscription;
@@ -45,6 +47,8 @@ class AdminManagementTest extends TestCase
             ->assertSee('name="is_active"', false)
             ->assertSee('name="is_admin"', false)
             ->assertSee('Назначенная панель')
+            ->assertSee('Мягко удалить')
+            ->assertSee('Заблокировать пользователя')
             ->assertDontSee('name="password"', false)
             ->assertDontSee('name="telegram_user_id"', false);
     }
@@ -135,9 +139,10 @@ class AdminManagementTest extends TestCase
         ]);
         $newExpiry = now()->addDays(60)->startOfMinute();
         $client = Mockery::mock(ThreeXUiClient::class);
-        $client->shouldReceive('provision')->once()->withArgs(function (Panel $sentPanel, Subscription $sentSubscription) use ($panel, $subscription, $newExpiry): bool {
+        $client->shouldReceive('setEnabled')->once()->withArgs(function (Panel $sentPanel, Subscription $sentSubscription, bool $enabled) use ($panel, $subscription, $newExpiry): bool {
             return $sentPanel->is($panel)
                 && $sentSubscription->is($subscription)
+                && $enabled
                 && $sentSubscription->traffic_limit_bytes === 200_000_000_000
                 && $sentSubscription->connection_limit === 4
                 && $sentSubscription->expires_at->equalTo($newExpiry);
@@ -188,11 +193,169 @@ class AdminManagementTest extends TestCase
             'assigned_panel_id' => '',
         ])->assertSessionHasErrors('is_admin');
 
+        $this->post(route('admin.users.ban', $admin))->assertSessionHasErrors('user');
+        $this->delete(route('admin.users.delete', $admin))->assertSessionHasErrors('user');
+        $this->put(route('admin.users.update', $admin), [
+            'name' => $admin->name,
+            'email' => $admin->email,
+            'is_admin' => '1',
+            'is_active' => '0',
+            'assigned_panel_id' => '',
+        ])->assertSessionHasErrors('is_active');
+
         $this->assertDatabaseHas('users', [
             'id' => $admin->id,
             'is_admin' => true,
             'is_active' => true,
         ]);
+    }
+
+    public function test_non_admin_cannot_ban_or_soft_delete_users(): void
+    {
+        $user = User::factory()->create();
+        $target = User::factory()->create();
+
+        $this->actingAs($user)->post(route('admin.users.ban', $target))->assertForbidden();
+        $this->delete(route('admin.users.delete', $target))->assertForbidden();
+        $this->assertDatabaseHas('users', ['id' => $target->id, 'is_active' => true]);
+    }
+
+    public function test_panel_failure_during_ban_is_reported_and_audited_without_reactivating_account(): void
+    {
+        $admin = User::factory()->create(['is_admin' => true]);
+        $panel = $this->createPanel();
+        $user = User::factory()->create(['assigned_panel_id' => $panel->id]);
+        $subscription = Subscription::query()->create([
+            'user_id' => $user->id,
+            'panel_id' => $panel->id,
+            'client_uuid' => (string) Str::uuid(),
+            'sub_id' => 'FailedBanSub123',
+            'client_email' => 'failed-ban@sitevps',
+            'expires_at' => now()->addDays(30),
+            'traffic_limit_bytes' => 100_000_000_000,
+            'connection_limit' => 2,
+            'status' => 'active',
+        ]);
+        $client = Mockery::mock(ThreeXUiClient::class);
+        $client->shouldReceive('setEnabled')->once()->withArgs(
+            fn (Panel $sentPanel, Subscription $sentSubscription, bool $enabled): bool => $sentPanel->is($panel)
+                && $sentSubscription->is($subscription)
+                && ! $enabled,
+        )->andThrow(new PanelApiException('Panel unavailable.'));
+        $this->app->instance(ThreeXUiClient::class, $client);
+
+        $this->actingAs($admin)->post(route('admin.users.ban', $user))
+            ->assertRedirect()
+            ->assertSessionHas('status', 'Учётная запись отключена, но VPN-клиент не удалось заблокировать на панели. Проверьте ошибку подписки.');
+
+        $this->assertDatabaseHas('users', ['id' => $user->id, 'is_active' => false]);
+        $this->assertDatabaseHas('subscriptions', ['id' => $subscription->id, 'last_error' => 'Panel unavailable.']);
+        $this->assertDatabaseHas('admin_audit_logs', [
+            'actor_id' => $admin->id,
+            'subject_user_id' => $user->id,
+            'action' => 'user_access_sync_failed',
+        ]);
+    }
+
+    public function test_profile_status_deactivation_also_disables_the_panel_client(): void
+    {
+        $admin = User::factory()->create(['is_admin' => true]);
+        $panel = $this->createPanel();
+        $user = User::factory()->create(['assigned_panel_id' => $panel->id]);
+        $subscription = Subscription::query()->create([
+            'user_id' => $user->id,
+            'panel_id' => $panel->id,
+            'client_uuid' => (string) Str::uuid(),
+            'sub_id' => 'StatusFieldSub123',
+            'client_email' => 'status-field@sitevps',
+            'expires_at' => now()->addDays(30),
+            'traffic_limit_bytes' => 100_000_000_000,
+            'connection_limit' => 2,
+            'status' => 'active',
+        ]);
+        $client = Mockery::mock(ThreeXUiClient::class);
+        $client->shouldReceive('setEnabled')->once()->withArgs(
+            fn (Panel $sentPanel, Subscription $sentSubscription, bool $enabled): bool => $sentPanel->is($panel)
+                && $sentSubscription->is($subscription)
+                && ! $enabled,
+        );
+        $this->app->instance(ThreeXUiClient::class, $client);
+
+        $this->actingAs($admin)->put(route('admin.users.update', $user), [
+            'name' => $user->name,
+            'email' => $user->email,
+            'is_admin' => '0',
+            'is_active' => '0',
+            'assigned_panel_id' => (string) $panel->id,
+        ])->assertRedirect(route('admin.users.edit', $user));
+
+        $this->assertDatabaseHas('users', ['id' => $user->id, 'is_active' => false]);
+        $this->assertDatabaseHas('admin_audit_logs', [
+            'actor_id' => $admin->id,
+            'subject_user_id' => $user->id,
+            'action' => 'user_updated',
+        ]);
+    }
+
+    public function test_admin_can_ban_soft_delete_and_restore_user_with_audit_and_preserved_history(): void
+    {
+        $admin = User::factory()->create(['is_admin' => true]);
+        $panel = $this->createPanel();
+        $user = User::factory()->create(['assigned_panel_id' => $panel->id]);
+        $subscription = Subscription::query()->create([
+            'user_id' => $user->id,
+            'panel_id' => $panel->id,
+            'client_uuid' => (string) Str::uuid(),
+            'sub_id' => 'BanAccess123',
+            'client_email' => 'ban-user@sitevps',
+            'expires_at' => now()->addDays(30),
+            'traffic_limit_bytes' => 100_000_000_000,
+            'connection_limit' => 2,
+            'status' => 'active',
+        ]);
+        $tariff = Tariff::query()->create([
+            'name' => 'History tariff',
+            'slug' => 'history-tariff',
+            'price_kopecks' => 1299,
+            'duration_days' => 30,
+            'traffic_gb' => 100,
+            'connection_limit' => 2,
+            'is_active' => true,
+        ]);
+        $order = Order::query()->create([
+            'reference' => (string) Str::uuid(),
+            'user_id' => $user->id,
+            'tariff_id' => $tariff->id,
+            'amount_kopecks' => 1299,
+            'status' => 'active',
+        ]);
+
+        $client = Mockery::mock(ThreeXUiClient::class);
+        $client->shouldReceive('setEnabled')->times(3)->withArgs(
+            fn (Panel $sentPanel, Subscription $sentSubscription, bool $enabled): bool => $sentPanel->is($panel)
+                && $sentSubscription->is($subscription)
+                && $enabled === (bool) ($sentSubscription->user->fresh()->is_active),
+        );
+        $this->app->instance(ThreeXUiClient::class, $client);
+
+        $this->actingAs($admin)->post(route('admin.users.ban', $user))
+            ->assertRedirect()
+            ->assertSessionHas('status');
+        $this->assertDatabaseHas('users', ['id' => $user->id, 'is_active' => false]);
+
+        $this->delete(route('admin.users.delete', $user))
+            ->assertRedirect()
+            ->assertSessionHas('status');
+        $this->post(route('admin.users.restore', $user))
+            ->assertRedirect()
+            ->assertSessionHas('status');
+
+        $this->assertDatabaseHas('users', ['id' => $user->id, 'is_active' => true]);
+        $this->assertDatabaseHas('orders', ['id' => $order->id, 'user_id' => $user->id]);
+        $this->assertDatabaseHas('subscriptions', ['id' => $subscription->id, 'user_id' => $user->id]);
+        $this->assertDatabaseHas('admin_audit_logs', ['actor_id' => $admin->id, 'subject_user_id' => $user->id, 'action' => 'user_banned']);
+        $this->assertDatabaseHas('admin_audit_logs', ['actor_id' => $admin->id, 'subject_user_id' => $user->id, 'action' => 'user_soft_deleted']);
+        $this->assertDatabaseHas('admin_audit_logs', ['actor_id' => $admin->id, 'subject_user_id' => $user->id, 'action' => 'user_unbanned']);
     }
 
     public function test_disabled_account_cannot_log_in_or_continue_using_an_existing_session(): void

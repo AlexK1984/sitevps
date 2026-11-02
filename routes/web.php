@@ -37,6 +37,12 @@ Route::post('/checkout/{tariff}', [PaymentController::class, 'create'])
 Route::post('/checkout/{tariff}/nowpayments', [PaymentController::class, 'createNowPayments'])
     ->middleware(['auth', 'active', 'throttle:10,1'])
     ->name('checkout.nowpayments');
+Route::post('/checkout/{tariff}/replace', [PaymentController::class, 'createReplacement'])
+    ->middleware(['auth', 'active', 'throttle:10,1'])
+    ->name('checkout.replace');
+Route::post('/checkout/{tariff}/nowpayments/replace', [PaymentController::class, 'createNowPaymentsReplacement'])
+    ->middleware(['auth', 'active', 'throttle:10,1'])
+    ->name('checkout.nowpayments.replace');
 
 Route::post('/webhooks/yookassa', [PaymentController::class, 'webhook'])->name('webhooks.yookassa');
 Route::post('/webhooks/nowpayments', [PaymentController::class, 'nowPaymentsWebhook'])->name('webhooks.nowpayments');
@@ -59,6 +65,9 @@ Route::prefix('admin')
         Route::get('/system', [AdminController::class, 'page'])->defaults('section', 'system')->name('system');
         Route::get('/users/{user}/edit', [AdminController::class, 'editUser'])->name('users.edit');
         Route::put('/users/{user}', [AdminController::class, 'updateUser'])->name('users.update');
+        Route::post('/users/{user}/ban', [AdminController::class, 'banUser'])->name('users.ban');
+        Route::post('/users/{user}/restore', [AdminController::class, 'restoreUser'])->name('users.restore');
+        Route::delete('/users/{user}', [AdminController::class, 'softDeleteUser'])->name('users.delete');
         Route::put('/home-content', [AdminController::class, 'updateHomeContent'])->name('home-content.update');
         Route::put('/seo', [AdminController::class, 'updateSeoSettings'])->name('seo.update');
         Route::put('/payment-settings', [AdminController::class, 'updatePaymentSettings'])->name('payment-settings.update');

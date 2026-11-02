@@ -168,9 +168,10 @@ class AdminController extends Controller
 
         $syncSubscriptionId = null;
         $syncPanelId = null;
+        $syncEnabled = true;
         $auditChanges = [];
 
-        DB::transaction(function () use ($request, $user, $validated, &$syncSubscriptionId, &$syncPanelId, &$auditChanges): void {
+        DB::transaction(function () use ($request, $user, $validated, &$syncSubscriptionId, &$syncPanelId, &$syncEnabled, &$auditChanges): void {
             $admins = User::query()->where('is_admin', true)->orderBy('id')->lockForUpdate()->get(['id', 'is_active']);
             $lockedUser = User::query()->whereKey($user->id)->lockForUpdate()->firstOrFail();
             $oldPanelId = $lockedUser->assigned_panel_id;
@@ -195,6 +196,11 @@ class AdminController extends Controller
 
             $newAdmin = (bool) $validated['is_admin'];
             $newActive = (bool) $validated['is_active'];
+            if (! $newActive && $request->user()->is($lockedUser)) {
+                throw ValidationException::withMessages([
+                    'is_active' => 'Нельзя отключить собственную учётную запись администратора.',
+                ]);
+            }
             if ($newAdmin && ! $newActive) {
                 throw ValidationException::withMessages([
                     'is_active' => 'Отключённая учётная запись не может быть администратором.',
@@ -227,6 +233,12 @@ class AdminController extends Controller
             }
 
             $subscription = $lockedUser->subscription()->lockForUpdate()->first();
+            $accessChanged = in_array('is_active', $userChanges, true);
+            if ($accessChanged && $subscription?->panel_id) {
+                $syncSubscriptionId = $subscription->id;
+                $syncPanelId = $subscription->panel_id;
+                $syncEnabled = $newActive;
+            }
             if (isset($validated['subscription']) && $subscription) {
                 $values = $validated['subscription'];
                 $subscription->fill([
@@ -242,6 +254,7 @@ class AdminController extends Controller
                     $auditChanges[] = 'Подписка: '.implode(', ', $subscriptionChanges).'.';
                     $syncSubscriptionId = $subscription->id;
                     $syncPanelId = $newPanelId;
+                    $syncEnabled = $newActive;
                 }
             }
 
@@ -256,26 +269,108 @@ class AdminController extends Controller
         });
 
         if ($syncSubscriptionId && $syncPanelId) {
+            $user = $user->fresh();
             $subscription = Subscription::query()->findOrFail($syncSubscriptionId);
-            if (in_array($subscription->status, ['active', 'provisioning_failed'], true)) {
+            if (! $syncEnabled || in_array($subscription->status, ['active', 'provisioning_failed'], true)) {
                 try {
-                    $client->provision(Panel::query()->findOrFail($syncPanelId), $subscription);
-                    $subscription->forceFill(['last_error' => null])->save();
+                    $client->setEnabled(Panel::query()->findOrFail($syncPanelId), $subscription, $syncEnabled);
+                    if ($syncEnabled && $subscription->status === 'active') {
+                        $subscription->forceFill(['last_error' => null])->save();
+                    }
                 } catch (PanelApiException $exception) {
                     $subscription->forceFill(['last_error' => $exception->getMessage()])->save();
                     AdminAuditLog::query()->create([
                         'actor_id' => $request->user()->id,
                         'subject_user_id' => $user->id,
-                        'action' => 'subscription_sync_failed',
+                        'action' => $syncEnabled ? 'subscription_sync_failed' : 'user_access_sync_failed',
                         'summary' => 'Изменения сохранены в сайте, но панель 3x-ui не подтвердила синхронизацию: '.$exception->getMessage(),
                     ]);
 
-                    return back()->with('status', 'Изменения сохранены, но синхронизация с панелью не удалась. Проверьте ошибку в карточке подписки.');
+                    return back()->with('status', $syncEnabled
+                        ? 'Изменения сохранены, но панель не подтвердила синхронизацию. Проверьте ошибку в карточке подписки.'
+                        : 'Учётная запись отключена, но панель не подтвердила блокировку VPN-клиента. Проверьте ошибку в карточке подписки.');
                 }
             }
         }
 
         return redirect()->route('admin.users.edit', $user)->with('status', 'Данные пользователя обновлены.');
+    }
+
+    public function banUser(Request $request, User $user, ThreeXUiClient $client): RedirectResponse
+    {
+        return $this->changeUserAccess($request, $user, false, 'user_banned', $client);
+    }
+
+    public function restoreUser(Request $request, User $user, ThreeXUiClient $client): RedirectResponse
+    {
+        return $this->changeUserAccess($request, $user, true, 'user_unbanned', $client);
+    }
+
+    public function softDeleteUser(Request $request, User $user, ThreeXUiClient $client): RedirectResponse
+    {
+        return $this->changeUserAccess($request, $user, false, 'user_soft_deleted', $client);
+    }
+
+    private function changeUserAccess(
+        Request $request,
+        User $user,
+        bool $active,
+        string $auditAction,
+        ThreeXUiClient $client,
+    ): RedirectResponse {
+        if (! $active && $request->user()->is($user)) {
+            throw ValidationException::withMessages([
+                'user' => 'Нельзя заблокировать или удалить собственную учётную запись администратора.',
+            ]);
+        }
+
+        DB::transaction(function () use ($request, $user, $active, $auditAction): void {
+            $admins = User::query()->where('is_admin', true)->orderBy('id')->lockForUpdate()->get(['id', 'is_active']);
+            $lockedUser = User::query()->whereKey($user->id)->lockForUpdate()->firstOrFail();
+
+            if (! $active && $lockedUser->is_admin && $lockedUser->is_active
+                && $admins->where('id', '!=', $lockedUser->id)->where('is_active', true)->isEmpty()) {
+                throw ValidationException::withMessages([
+                    'user' => 'Нельзя отключить или удалить последнего активного администратора.',
+                ]);
+            }
+
+            $lockedUser->forceFill(['is_active' => $active])->save();
+            AdminAuditLog::query()->create([
+                'actor_id' => $request->user()->id,
+                'subject_user_id' => $lockedUser->id,
+                'action' => $auditAction,
+                'summary' => $active
+                    ? 'Вход в учётную запись восстановлен; сохранённые заказы и платёжная история не менялись.'
+                    : ($auditAction === 'user_soft_deleted'
+                        ? 'Учётная запись мягко удалена через деактивацию; заказы и платёжная история сохранены.'
+                        : 'Вход в учётную запись заблокирован; заказы и платёжная история сохранены.'),
+            ]);
+        });
+
+        $user = $user->fresh();
+        $subscription = $user->subscription;
+        if ($subscription?->panel_id && (! $active || $subscription->isActive())) {
+            try {
+                $client->setEnabled($subscription->panel, $subscription, $active);
+            } catch (PanelApiException $exception) {
+                $subscription->forceFill(['last_error' => $exception->getMessage()])->save();
+                AdminAuditLog::query()->create([
+                    'actor_id' => $request->user()->id,
+                    'subject_user_id' => $user->id,
+                    'action' => 'user_access_sync_failed',
+                    'summary' => 'Статус сайта сохранён, но панель 3x-ui не подтвердила изменение доступа: '.$exception->getMessage(),
+                ]);
+
+                return back()->with('status', $active
+                    ? 'Доступ к сайту восстановлен, но VPN-клиент не удалось включить на панели. Проверьте ошибку подписки.'
+                    : 'Учётная запись отключена, но VPN-клиент не удалось заблокировать на панели. Проверьте ошибку подписки.');
+            }
+        }
+
+        return back()->with('status', $active
+            ? 'Доступ пользователя восстановлен.'
+            : ($auditAction === 'user_soft_deleted' ? 'Пользователь мягко удалён: доступ заблокирован, история сохранена.' : 'Пользователь заблокирован.'));
     }
 
     public function updateHomeContent(Request $request): RedirectResponse

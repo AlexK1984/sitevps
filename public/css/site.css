@@ -768,6 +768,16 @@ tr:last-child td{
   color:var(--green);
   font-weight:700
 }
+.admin-inline-action{
+  display:inline-block;
+  margin-left:5px
+}
+.admin-user-actions{
+  display:flex;
+  flex-wrap:wrap;
+  gap:10px;
+  margin:16px 0
+}
 .admin-workspace{
   min-width:0
 }

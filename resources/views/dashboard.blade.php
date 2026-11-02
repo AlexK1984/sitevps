@@ -53,11 +53,21 @@
                     <span class="plan-icon">✳</span><h3>{{ $tariff->name }}</h3>
                     <div class="plan-price">{{ $tariff->priceLabel() }} <small>/ {{ $tariff->duration_days }} дней</small></div>
                     <ul class="feature-list"><li><span>↗</span> {{ $tariff->traffic_gb }} ГБ</li><li><span>◉</span> До {{ $tariff->connection_limit }} IP*</li></ul>
-                    @if($yookassaAvailable)
-                        <form method="post" action="{{ route('checkout', $tariff) }}">@csrf<button class="button button-full" type="submit">Оплатить через ЮKassa →</button></form>
-                    @endif
-                    @if($nowPaymentsAvailable)
-                        <form method="post" action="{{ route('checkout.nowpayments', $tariff) }}">@csrf<button class="button button-outline button-full" type="submit">Оплатить криптовалютой →</button></form>
+                    @if($subscription?->isActive() && $subscription->tariff_id !== $tariff->id)
+                        <p class="fine-print">Смена тарифа по полной цене. Текущий доступ сохранится до подтверждения оплаты; остаток срока и трафика не переносятся.</p>
+                        @if($yookassaAvailable)
+                            <form method="post" action="{{ route('checkout.replace', $tariff) }}">@csrf<button class="button button-full" type="submit">Сменить на этот тариф →</button></form>
+                        @endif
+                        @if($nowPaymentsAvailable)
+                            <form method="post" action="{{ route('checkout.nowpayments.replace', $tariff) }}">@csrf<button class="button button-outline button-full" type="submit">Сменить, оплатив криптовалютой →</button></form>
+                        @endif
+                    @else
+                        @if($yookassaAvailable)
+                            <form method="post" action="{{ route('checkout', $tariff) }}">@csrf<button class="button button-full" type="submit">{{ $subscription?->isActive() ? 'Продлить текущий тариф →' : 'Оплатить через ЮKassa →' }}</button></form>
+                        @endif
+                        @if($nowPaymentsAvailable)
+                            <form method="post" action="{{ route('checkout.nowpayments', $tariff) }}">@csrf<button class="button button-outline button-full" type="submit">{{ $subscription?->isActive() ? 'Продлить через криптовалюту →' : 'Оплатить криптовалютой →' }}</button></form>
+                        @endif
                     @endif
                     @unless($yookassaAvailable || $nowPaymentsAvailable)
                         <p class="muted">Оплата через сайт временно недоступна.</p>
@@ -72,7 +82,7 @@
     <div class="section-heading"><div><span class="eyebrow">ИСТОРИЯ</span><h2>Последние заказы</h2></div></div>
     <div class="table-wrap"><table><thead><tr><th>Тариф</th><th>Сумма</th><th>Статус</th><th>Дата</th><th></th></tr></thead><tbody>
         @forelse($orders as $order)
-            <tr><td>{{ $order->tariff->name }}</td><td>{{ $order->paidAmountLabel() }}<br><small>{{ $order->paymentMethodLabel() }}</small></td><td><span class="status-pill">{{ $order->statusLabel() }}</span></td><td>{{ $order->created_at->format('d.m.Y H:i') }}</td><td>@if($order->status === 'pending' && $order->payment_url)<a href="{{ $order->payment_url }}" target="_blank" rel="noopener noreferrer">Продолжить оплату →</a>@endif</td></tr>
+            <tr><td>{{ $order->tariff->name }}<br><small>{{ $order->subscriptionActionLabel() }}</small></td><td>{{ $order->paidAmountLabel() }}<br><small>{{ $order->paymentMethodLabel() }}</small></td><td><span class="status-pill">{{ $order->statusLabel() }}</span></td><td>{{ $order->created_at->format('d.m.Y H:i') }}</td><td>@if($order->status === 'pending' && $order->payment_url)<a href="{{ $order->payment_url }}" target="_blank" rel="noopener noreferrer">Продолжить оплату →</a>@endif</td></tr>
         @empty
             <tr><td colspan="5" class="empty-cell">Заказов пока нет.</td></tr>
         @endforelse

@@ -15,7 +15,7 @@ class CheckoutService
         private readonly PaymentEventLogger $events,
     ) {}
 
-    public function create(User $user, Tariff $tariff, string $returnUrl): Order
+    public function create(User $user, Tariff $tariff, string $returnUrl, bool $replacement = false): Order
     {
         $order = Order::create([
             'reference' => (string) Str::uuid(),
@@ -26,6 +26,7 @@ class CheckoutService
             'payment_method' => 'yookassa',
             'payment_currency' => 'RUB',
             'payment_amount_units' => $tariff->price_kopecks,
+            'subscription_action' => $replacement ? 'replacement' : 'renewal',
             'status' => 'pending',
         ]);
         $this->events->record(

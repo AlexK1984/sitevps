@@ -1378,6 +1378,120 @@ class SubscriptionFlowTest extends TestCase
             && data_get($request->data(), 'receipt.customer.email') === $user->email);
     }
 
+    public function test_active_user_can_order_a_tariff_replacement_without_changing_current_access_before_payment(): void
+    {
+        config([
+            'services.yookassa.shop_id' => 'shop-test',
+            'services.yookassa.secret_key' => 'secret-test',
+            'services.yookassa.receipt_vat_code' => '4',
+            'services.yookassa.tax_system_code' => '2',
+        ]);
+        PaymentSettings::current()->update(['yookassa_enabled' => true]);
+        $user = User::factory()->create();
+        $currentTariff = $this->createTariff();
+        $newTariff = Tariff::query()->create([
+            'name' => 'Quarterly',
+            'slug' => 'quarterly',
+            'price_kopecks' => 2599,
+            'duration_days' => 90,
+            'traffic_gb' => 250,
+            'connection_limit' => 5,
+            'is_active' => true,
+        ]);
+        $expiry = now()->addDays(17)->startOfMinute();
+        $subscription = Subscription::query()->create([
+            'user_id' => $user->id,
+            'tariff_id' => $currentTariff->id,
+            'client_uuid' => (string) Str::uuid(),
+            'sub_id' => 'CurrentPlan123',
+            'client_email' => 'current-user@sitevps',
+            'expires_at' => $expiry,
+            'traffic_limit_bytes' => 410_000_000_000,
+            'connection_limit' => 2,
+            'status' => 'active',
+        ]);
+        Http::fake([
+            'https://api.yookassa.ru/v3/payments' => Http::response([
+                'id' => 'replacement-payment',
+                'confirmation' => ['confirmation_url' => 'https://pay.example.com/replacement'],
+            ]),
+        ]);
+
+        $this->actingAs($user)->get(route('dashboard'))
+            ->assertOk()
+            ->assertSee(route('checkout.replace', $newTariff), false)
+            ->assertSee('остаток срока и трафика не переносятся')
+            ->assertDontSee('action="'.route('checkout', $newTariff).'"', false);
+
+        $this->post(route('checkout', $newTariff))
+            ->assertSessionHasErrors('payment');
+        $this->assertDatabaseCount('orders', 0);
+
+        $this->post(route('checkout.replace', $newTariff))
+            ->assertRedirect('https://pay.example.com/replacement');
+
+        $order = Order::query()->where('user_id', $user->id)->firstOrFail();
+        $this->assertSame('replacement', $order->subscription_action);
+        $this->assertSame(2599, $order->amount_kopecks);
+        $this->assertDatabaseHas('subscriptions', [
+            'id' => $subscription->id,
+            'tariff_id' => $currentTariff->id,
+            'expires_at' => $expiry->toDateTimeString(),
+            'traffic_limit_bytes' => 410_000_000_000,
+            'status' => 'active',
+        ]);
+    }
+
+    public function test_nowpayments_replacement_order_is_marked_separately_from_renewal(): void
+    {
+        Queue::fake();
+        Http::fake([
+            'https://api.nowpayments.io/v1/invoice' => Http::response([
+                'id' => 'replacement-invoice',
+                'invoice_url' => 'https://nowpayments.io/payment/?iid=replacement-invoice',
+            ], 201),
+        ]);
+        PaymentSettings::current()->update([
+            'nowpayments_api_key' => 'private-api-key',
+            'nowpayments_ipn_secret' => 'private-ipn-secret',
+            'nowpayments_enabled' => true,
+            'nowpayments_rub_verified' => true,
+        ]);
+        $user = User::factory()->create();
+        $currentTariff = $this->createTariff();
+        $newTariff = Tariff::query()->create([
+            'name' => 'Quarterly',
+            'slug' => 'quarterly',
+            'price_kopecks' => 2599,
+            'duration_days' => 90,
+            'traffic_gb' => 250,
+            'connection_limit' => 5,
+            'is_active' => true,
+        ]);
+        Subscription::query()->create([
+            'user_id' => $user->id,
+            'tariff_id' => $currentTariff->id,
+            'client_uuid' => (string) Str::uuid(),
+            'sub_id' => 'CryptoCurrent123',
+            'client_email' => 'crypto-current@sitevps',
+            'expires_at' => now()->addDays(17),
+            'traffic_limit_bytes' => 410_000_000_000,
+            'connection_limit' => 2,
+            'status' => 'active',
+        ]);
+
+        $this->actingAs($user)->post(route('checkout.nowpayments.replace', $newTariff))
+            ->assertRedirect('https://nowpayments.io/payment/?iid=replacement-invoice');
+
+        $this->assertDatabaseHas('orders', [
+            'user_id' => $user->id,
+            'tariff_id' => $newTariff->id,
+            'subscription_action' => 'replacement',
+            'payment_method' => 'nowpayments',
+            'amount_kopecks' => 2599,
+        ]);
+    }
+
     public function test_yookassa_webhook_verifies_amount_before_marking_order_paid(): void
     {
         config([
@@ -1502,6 +1616,155 @@ class SubscriptionFlowTest extends TestCase
         $this->assertSame('panel-secret', Panel::query()->findOrFail($panel->id)->password);
         $this->assertNotSame('panel-secret', DB::table('panels')->where('id', $panel->id)->value('password'));
         Carbon::setTestNow();
+    }
+
+    public function test_replacement_order_resets_expiry_and_traffic_once_even_after_panel_retry(): void
+    {
+        Carbon::setTestNow('2026-10-29 12:00:00');
+        $panel = $this->createPanel('Panel');
+        $user = User::factory()->create(['assigned_panel_id' => $panel->id]);
+        $oldTariff = $this->createTariff();
+        $newTariff = Tariff::query()->create([
+            'name' => 'Quarterly',
+            'slug' => 'quarterly',
+            'price_kopecks' => 2599,
+            'duration_days' => 90,
+            'traffic_gb' => 250,
+            'connection_limit' => 5,
+            'is_active' => true,
+        ]);
+        $subscription = Subscription::query()->create([
+            'user_id' => $user->id,
+            'tariff_id' => $oldTariff->id,
+            'panel_id' => $panel->id,
+            'client_uuid' => (string) Str::uuid(),
+            'sub_id' => 'ReplacementSub123',
+            'client_email' => 'replacement-user@sitevps',
+            'expires_at' => now()->addDays(17),
+            'traffic_limit_bytes' => 410_000_000_000,
+            'connection_limit' => 2,
+            'status' => 'active',
+        ]);
+        $order = $this->createOrder($newTariff, $user, 'paid_unassigned');
+        $order->update(['subscription_action' => 'replacement', 'paid_at' => now()]);
+
+        $failedClient = Mockery::mock(ThreeXUiClient::class);
+        $failedClient->shouldReceive('update')->once()->withArgs(
+            fn (Panel $sentPanel, Subscription $sentSubscription): bool => $sentPanel->is($panel)
+                && $sentSubscription->is($subscription)
+                && $sentSubscription->traffic_limit_bytes === 250_000_000_000
+                && $sentSubscription->expires_at->equalTo(now()->addDays(90)),
+        )->andThrow(new PanelApiException('Panel unavailable.'));
+        $this->app->instance(ThreeXUiClient::class, $failedClient);
+
+        ProvisionSubscription::dispatchSync($order->id);
+
+        $expectedExpiry = now()->addDays(90)->toDateTimeString();
+        $this->assertDatabaseHas('subscriptions', [
+            'id' => $subscription->id,
+            'tariff_id' => $newTariff->id,
+            'expires_at' => $expectedExpiry,
+            'traffic_limit_bytes' => 250_000_000_000,
+            'status' => 'provisioning_failed',
+        ]);
+        $this->assertDatabaseHas('orders', ['id' => $order->id, 'status' => 'provisioning_failed']);
+        $this->assertDatabaseCount('subscription_order_applications', 1);
+
+        $retryClient = Mockery::mock(ThreeXUiClient::class);
+        $retryClient->shouldReceive('update')->once()->withArgs(
+            fn (Panel $sentPanel, Subscription $sentSubscription): bool => $sentPanel->is($panel)
+                && $sentSubscription->is($subscription)
+                && $sentSubscription->traffic_limit_bytes === 250_000_000_000
+                && $sentSubscription->expires_at->toDateTimeString() === $expectedExpiry,
+        );
+        $this->app->instance(ThreeXUiClient::class, $retryClient);
+
+        ProvisionSubscription::dispatchSync($order->id);
+
+        $this->assertDatabaseHas('orders', ['id' => $order->id, 'status' => 'active']);
+        $this->assertDatabaseHas('subscriptions', [
+            'id' => $subscription->id,
+            'expires_at' => $expectedExpiry,
+            'traffic_limit_bytes' => 250_000_000_000,
+            'status' => 'active',
+        ]);
+        $this->assertDatabaseCount('subscription_order_applications', 1);
+        Carbon::setTestNow();
+    }
+
+    public function test_replacement_disables_old_panel_only_after_new_panel_accepts_the_client(): void
+    {
+        $oldPanel = $this->createPanel('Old panel');
+        $newPanel = $this->createPanel('New panel');
+        $user = User::factory()->create(['assigned_panel_id' => $newPanel->id]);
+        $oldTariff = $this->createTariff();
+        $newTariff = Tariff::query()->create([
+            'name' => 'Quarterly',
+            'slug' => 'quarterly',
+            'price_kopecks' => 2599,
+            'duration_days' => 90,
+            'traffic_gb' => 250,
+            'connection_limit' => 5,
+            'is_active' => true,
+        ]);
+        $subscription = Subscription::query()->create([
+            'user_id' => $user->id,
+            'tariff_id' => $oldTariff->id,
+            'panel_id' => $oldPanel->id,
+            'client_uuid' => (string) Str::uuid(),
+            'sub_id' => 'MigratingSub123',
+            'client_email' => 'migrating-user@sitevps',
+            'expires_at' => now()->addDays(17),
+            'traffic_limit_bytes' => 410_000_000_000,
+            'connection_limit' => 2,
+            'status' => 'active',
+        ]);
+        $order = $this->createOrder($newTariff, $user, 'paid_unassigned');
+        $order->update(['subscription_action' => 'replacement', 'paid_at' => now()]);
+
+        $client = Mockery::mock(ThreeXUiClient::class);
+        $client->shouldReceive('provision')->once()->ordered()->withArgs(
+            fn (Panel $sentPanel, Subscription $sentSubscription): bool => $sentPanel->is($newPanel)
+                && $sentSubscription->is($subscription),
+        );
+        $client->shouldReceive('setEnabled')->once()->ordered()->withArgs(
+            fn (Panel $sentPanel, Subscription $sentSubscription, bool $enabled): bool => $sentPanel->is($oldPanel)
+                && $sentSubscription->is($subscription)
+                && $enabled === false,
+        );
+        $this->app->instance(ThreeXUiClient::class, $client);
+
+        ProvisionSubscription::dispatchSync($order->id);
+
+        $this->assertDatabaseHas('subscription_order_applications', [
+            'order_id' => $order->id,
+            'subscription_id' => $subscription->id,
+            'previous_panel_id' => $oldPanel->id,
+        ]);
+        $this->assertDatabaseHas('subscriptions', [
+            'id' => $subscription->id,
+            'panel_id' => $newPanel->id,
+            'status' => 'active',
+        ]);
+        $this->assertDatabaseHas('orders', ['id' => $order->id, 'status' => 'active']);
+    }
+
+    public function test_paid_order_for_disabled_user_waits_without_creating_subscription_or_duplicate_events(): void
+    {
+        $user = User::factory()->create(['is_active' => false]);
+        $order = $this->createOrder($this->createTariff(), $user, 'paid_unassigned');
+        $order->update(['paid_at' => now()]);
+
+        ProvisionSubscription::dispatchSync($order->id);
+        ProvisionSubscription::dispatchSync($order->id);
+
+        $this->assertDatabaseHas('orders', [
+            'id' => $order->id,
+            'status' => 'paid_unassigned',
+            'error_message' => 'Аккаунт пользователя отключён. Восстановите доступ, затем повторите выдачу.',
+        ]);
+        $this->assertDatabaseCount('subscriptions', 0);
+        $this->assertDatabaseCount('payment_events', 1);
     }
 
     public function test_telegram_one_time_link_binds_the_account(): void
@@ -1849,6 +2112,97 @@ class SubscriptionFlowTest extends TestCase
             && data_get($request->data(), 'client.subId') === $subscription->sub_id);
     }
 
+    public function test_three_x_ui_client_disable_updates_the_same_client_across_all_supported_inbounds(): void
+    {
+        $inbounds = [
+            ['id' => 1, 'protocol' => 'vless', 'enable' => true, 'settings' => ['clients' => []]],
+            ['id' => 2, 'protocol' => 'trojan', 'enable' => true, 'settings' => ['clients' => []]],
+            ['id' => 3, 'protocol' => 'wireguard', 'enable' => true, 'settings' => ['clients' => []]],
+            ['id' => 4, 'protocol' => 'vless', 'enable' => false, 'settings' => ['clients' => []]],
+        ];
+        Http::fake(function (ClientRequest $request) use ($inbounds) {
+            $url = $request->url();
+
+            return match (true) {
+                str_ends_with($url, '/csrf-token') => Http::response(['success' => true, 'obj' => 'test-csrf']),
+                str_ends_with($url, '/login') => Http::response(['success' => true]),
+                str_ends_with($url, '/panel/api/inbounds/list') => Http::response(['success' => true, 'obj' => $inbounds]),
+                str_contains($url, '/panel/api/clients/update/') => Http::response(['success' => true]),
+                default => Http::response([], 404),
+            };
+        });
+        $panel = $this->createPanel('Panel');
+        $user = User::factory()->create();
+        $subscription = Subscription::query()->create([
+            'user_id' => $user->id,
+            'panel_id' => $panel->id,
+            'client_uuid' => (string) Str::uuid(),
+            'sub_id' => 'DisabledClient123',
+            'client_email' => 'disabled-client@sitevps',
+            'expires_at' => now()->addDays(30),
+            'traffic_limit_bytes' => 100_000_000_000,
+            'connection_limit' => 3,
+            'status' => 'active',
+        ]);
+
+        app(ThreeXUiClient::class)->setEnabled($panel, $subscription, false);
+
+        Http::assertSent(fn (ClientRequest $request): bool => str_contains($request->url(), '/panel/api/clients/update/disabled-client%40sitevps')
+            && $this->requestQuery($request, 'inboundIds') === '1,2,4'
+            && data_get($request->data(), 'id') === $subscription->client_uuid
+            && data_get($request->data(), 'subId') === $subscription->sub_id
+            && data_get($request->data(), 'enable') === false);
+    }
+
+    public function test_three_x_ui_client_replacement_uses_update_endpoint_and_direct_client_payload(): void
+    {
+        $inbounds = [
+            ['id' => 1, 'protocol' => 'vless', 'enable' => true, 'settings' => ['clients' => []]],
+            ['id' => 2, 'protocol' => 'trojan', 'enable' => false, 'settings' => ['clients' => []]],
+            ['id' => 3, 'protocol' => 'wireguard', 'enable' => true, 'settings' => ['clients' => []]],
+        ];
+        Http::fake(function (ClientRequest $request) use ($inbounds) {
+            $url = $request->url();
+
+            return match (true) {
+                str_ends_with($url, '/csrf-token') => Http::response(['success' => true, 'obj' => 'test-csrf']),
+                str_ends_with($url, '/login') => Http::response(['success' => true]),
+                str_ends_with($url, '/panel/api/inbounds/list') => Http::response(['success' => true, 'obj' => $inbounds]),
+                str_contains($url, '/panel/api/clients/update/') => Http::response(['success' => true]),
+                default => Http::response([], 404),
+            };
+        });
+        $panel = $this->createPanel('Panel');
+        $user = User::factory()->create();
+        $subscription = Subscription::query()->create([
+            'user_id' => $user->id,
+            'panel_id' => $panel->id,
+            'client_uuid' => (string) Str::uuid(),
+            'sub_id' => 'ReplaceClient123',
+            'client_email' => 'replacement-user@sitevps',
+            'expires_at' => now()->addDays(90),
+            'traffic_limit_bytes' => 250_000_000_000,
+            'connection_limit' => 5,
+            'status' => 'provisioning',
+        ]);
+
+        app(ThreeXUiClient::class)->update($panel, $subscription);
+
+        Http::assertSent(fn (ClientRequest $request): bool => str_contains($request->url(), '/panel/api/clients/update/replacement-user%40sitevps')
+            && $this->requestQuery($request, 'inboundIds') === '1,2'
+            && $request->hasHeader('X-CSRF-Token', 'test-csrf')
+            && $request->hasHeader('X-Requested-With', 'XMLHttpRequest')
+            && data_get($request->data(), 'email') === 'replacement-user@sitevps'
+            && data_get($request->data(), 'id') === $subscription->client_uuid
+            && data_get($request->data(), 'subId') === $subscription->sub_id
+            && data_get($request->data(), 'limitIp') === 5
+            && data_get($request->data(), 'totalGB') === 250_000_000_000
+            && data_get($request->data(), 'enable') === true
+            && ! array_key_exists('client', $request->data())
+            && ! array_key_exists('inboundIds', $request->data()));
+        Http::assertNotSent(fn (ClientRequest $request) => str_ends_with($request->url(), '/panel/api/clients/add'));
+    }
+
     public function test_three_x_ui_client_does_not_report_success_without_supported_active_inbounds(): void
     {
         $this->fakePanelHttp([
@@ -1991,6 +2345,13 @@ class SubscriptionFlowTest extends TestCase
                 ['Set-Cookie' => '3x-ui=session; Path=/; HttpOnly'],
             ),
         ]);
+    }
+
+    private function requestQuery(ClientRequest $request, string $key): ?string
+    {
+        parse_str((string) parse_url($request->url(), PHP_URL_QUERY), $query);
+
+        return $query[$key] ?? null;
     }
 
     private function createPanel(string $name, array $attributes = []): Panel

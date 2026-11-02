@@ -21,14 +21,32 @@ class PaymentController extends Controller
 {
     public function create(Request $request, Tariff $tariff, CheckoutService $checkout): RedirectResponse
     {
+        return $this->createYooKassaCheckout($request, $tariff, $checkout);
+    }
+
+    public function createReplacement(Request $request, Tariff $tariff, CheckoutService $checkout): RedirectResponse
+    {
+        return $this->createYooKassaCheckout($request, $tariff, $checkout, replacement: true);
+    }
+
+    private function createYooKassaCheckout(
+        Request $request,
+        Tariff $tariff,
+        CheckoutService $checkout,
+        bool $replacement = false,
+    ): RedirectResponse {
         abort_unless($tariff->is_active, 404);
+
+        if (! $this->checkoutActionAllowed($request, $tariff, $replacement)) {
+            return back()->withErrors(['payment' => 'Для смены активного тарифа выберите «Сменить на этот тариф»; обычная оплата предназначена для его продления.']);
+        }
 
         if (! PaymentSettings::current()->yookassa_enabled) {
             return back()->withErrors(['payment' => 'Оплата через ЮKassa временно отключена.']);
         }
 
         try {
-            $order = $checkout->create($request->user(), $tariff, route('dashboard', absolute: true));
+            $order = $checkout->create($request->user(), $tariff, route('dashboard', absolute: true), $replacement);
         } catch (PaymentGatewayException) {
             return back()->withErrors(['payment' => 'Оплата временно недоступна. Попробуйте позже.']);
         }
@@ -41,7 +59,28 @@ class PaymentController extends Controller
         Tariff $tariff,
         NowPaymentsCheckoutService $checkout,
     ): RedirectResponse {
+        return $this->createNowPaymentsCheckout($request, $tariff, $checkout);
+    }
+
+    public function createNowPaymentsReplacement(
+        Request $request,
+        Tariff $tariff,
+        NowPaymentsCheckoutService $checkout,
+    ): RedirectResponse {
+        return $this->createNowPaymentsCheckout($request, $tariff, $checkout, replacement: true);
+    }
+
+    private function createNowPaymentsCheckout(
+        Request $request,
+        Tariff $tariff,
+        NowPaymentsCheckoutService $checkout,
+        bool $replacement = false,
+    ): RedirectResponse {
         abort_unless($tariff->is_active, 404);
+
+        if (! $this->checkoutActionAllowed($request, $tariff, $replacement)) {
+            return back()->withErrors(['payment' => 'Для смены активного тарифа выберите «Сменить на этот тариф»; обычная оплата предназначена для его продления.']);
+        }
 
         $settings = PaymentSettings::current();
         if (! $settings->nowpayments_enabled
@@ -51,12 +90,23 @@ class PaymentController extends Controller
         }
 
         try {
-            $order = $checkout->create($request->user(), $tariff);
+            $order = $checkout->create($request->user(), $tariff, $replacement);
         } catch (PaymentGatewayException) {
             return back()->withErrors(['payment' => 'Не удалось создать счёт. Попробуйте позже.']);
         }
 
         return redirect()->away($order->payment_url);
+    }
+
+    private function checkoutActionAllowed(Request $request, Tariff $tariff, bool $replacement): bool
+    {
+        $subscription = $request->user()->subscription()->first();
+        $hasActiveSubscription = $subscription?->isActive() ?? false;
+        $isDifferentTariff = $hasActiveSubscription && $subscription->tariff_id !== $tariff->id;
+
+        return $replacement
+            ? $isDifferentTariff
+            : ! $isDifferentTariff;
     }
 
     public function webhook(Request $request, YooKassaClient $yooKassa, PaymentEventLogger $events): JsonResponse

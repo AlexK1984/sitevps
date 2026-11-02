@@ -6,5 +6,5 @@ use Illuminate\Database\Eloquent\Model;
 
 class SubscriptionOrderApplication extends Model
 {
-    protected $fillable = ['order_id', 'subscription_id'];
+    protected $fillable = ['order_id', 'subscription_id', 'previous_panel_id'];
 }
