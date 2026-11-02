@@ -21,6 +21,7 @@ use App\Services\NowPaymentsClient;
 use App\Services\PaymentEventLogger;
 use App\Services\RuntimeMailSettings;
 use App\Services\ThreeXUiClient;
+use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -36,65 +37,105 @@ class AdminController extends Controller
 {
     public function index(Request $request): View
     {
-        $settings = PaymentSettings::current();
-        $yookassaCredentials = $settings->yookassaCredentials();
+        return $this->renderPage($request, 'overview');
+    }
+
+    public function page(Request $request, string $section): View
+    {
+        return $this->renderPage($request, $section);
+    }
+
+    private function renderPage(Request $request, string $section): View
+    {
+        $data = match ($section) {
+            'overview' => [
+                'userCount' => User::query()->count(),
+                'tariffCount' => Tariff::query()->count(),
+                'panelCount' => Panel::query()->count(),
+                'orderCount' => Order::query()->count(),
+            ],
+            'users' => [
+                'users' => User::query()
+                    ->with('assignedPanel')
+                    ->when($request->filled('user_search'), function ($query) use ($request): void {
+                        $search = trim((string) $request->query('user_search'));
+                        $query->where(function ($query) use ($search): void {
+                            $query->where('name', 'like', '%'.$search.'%')
+                                ->orWhere('email', 'like', '%'.$search.'%');
+                        });
+                    })
+                    ->orderBy('id')
+                    ->paginate(30, ['*'], 'users')
+                    ->withQueryString(),
+            ],
+            'tariffs' => ['tariffs' => Tariff::query()->orderBy('id')->get()],
+            'panels' => ['panels' => Panel::query()->orderBy('name')->get()],
+            'orders' => [
+                'orders' => Order::query()->with(['user', 'tariff', 'panel'])->latest()->limit(100)->get(),
+                'testPaymentUsers' => User::query()->whereNotNull('assigned_panel_id')->orderBy('email')->get(['id', 'email']),
+                'testPaymentTariffs' => Tariff::query()->where('is_active', true)->orderBy('id')->get(['id', 'name']),
+                'testPaymentIdempotencyKey' => (string) Str::uuid(),
+                'paymentSettings' => $this->paymentSettingsViewData(),
+            ],
+            'payment-events' => $this->paymentEventsViewData($request),
+            'payment-settings', 'mail-settings' => ['paymentSettings' => $this->paymentSettingsViewData()],
+            'site', 'seo' => ['siteContent' => SiteContent::current()],
+            'system' => [
+                'adminAuditLogs' => AdminAuditLog::query()->with(['actor', 'subjectUser'])->latest()->limit(50)->get(),
+            ],
+            default => abort(404),
+        };
+
+        return view('admin.pages.'.$section, $data + ['siteContent' => SiteContent::current()]);
+    }
+
+    /**
+     * @return array{paymentEvents: LengthAwarePaginator, eventProvider: ?string}
+     */
+    private function paymentEventsViewData(Request $request): array
+    {
         $eventProvider = $request->query('event_provider');
         if (! in_array($eventProvider, ['yookassa', 'nowpayments', 'telegram_stars', 'internal_test'], true)) {
             $eventProvider = null;
         }
 
-        $paymentEvents = PaymentEvent::query()
-            ->with(['order.user', 'actor'])
-            ->when($eventProvider, fn ($query) => $query->where('provider', $eventProvider))
-            ->latest()
-            ->paginate(30, ['*'], 'payment_events')
-            ->withQueryString();
-
-        return view('admin.index', [
-            'users' => User::query()
-                ->with('assignedPanel')
-                ->when($request->filled('user_search'), function ($query) use ($request): void {
-                    $search = trim((string) $request->query('user_search'));
-                    $query->where(function ($query) use ($search): void {
-                        $query->where('name', 'like', '%'.$search.'%')
-                            ->orWhere('email', 'like', '%'.$search.'%');
-                    });
-                })
-                ->orderBy('id')
-                ->paginate(30, ['*'], 'users')
+        return [
+            'paymentEvents' => PaymentEvent::query()
+                ->with(['order.user', 'actor'])
+                ->when($eventProvider, fn ($query) => $query->where('provider', $eventProvider))
+                ->latest()
+                ->paginate(30, ['*'], 'payment_events')
                 ->withQueryString(),
-            'siteContent' => SiteContent::current(),
-            'tariffs' => Tariff::query()->orderBy('id')->get(),
-            'panels' => Panel::query()->orderBy('name')->get(),
-            'orders' => Order::query()->with(['user', 'tariff', 'panel'])->latest()->limit(100)->get(),
-            'adminAuditLogs' => AdminAuditLog::query()->with(['actor', 'subjectUser'])->latest()->limit(50)->get(),
-            'paymentEvents' => $paymentEvents,
             'eventProvider' => $eventProvider,
-            'testPaymentUsers' => User::query()->whereNotNull('assigned_panel_id')->orderBy('email')->get(['id', 'email']),
-            'testPaymentTariffs' => Tariff::query()->where('is_active', true)->orderBy('id')->get(['id', 'name']),
-            'testPaymentIdempotencyKey' => (string) Str::uuid(),
-            'paymentSettings' => (object) [
-                'yookassa_enabled' => $settings->yookassa_enabled,
-                'telegram_stars_enabled' => $settings->telegram_stars_enabled,
-                'internal_test_payments_enabled' => $settings->internal_test_payments_enabled,
-                'nowpayments_enabled' => $settings->nowpayments_enabled,
-                'nowpayments_rub_verified' => $settings->nowpayments_rub_verified,
-                'yookassa_configured' => filled($yookassaCredentials['shop_id']) && filled($yookassaCredentials['secret_key']),
-                'yookassa_configured_in_admin' => $settings->yookassaConfiguredInAdmin(),
-                'telegram_configured' => filled($settings->telegramBotToken()),
-                'telegram_configured_in_admin' => $settings->telegramConfiguredInAdmin(),
-                'smtp_enabled' => $settings->smtp_enabled,
-                'smtp_host' => $settings->smtp_host,
-                'smtp_port' => $settings->smtp_port,
-                'smtp_encryption' => $settings->smtp_encryption,
-                'smtp_from_address' => $settings->smtp_from_address,
-                'smtp_from_name' => $settings->smtp_from_name,
-                'smtp_configured_in_admin' => $settings->smtpConfiguredInAdmin(),
-                'smtp_username_configured_in_admin' => $settings->smtpUsernameConfiguredInAdmin(),
-                'smtp_password_configured_in_admin' => $settings->smtpPasswordConfiguredInAdmin(),
-                'nowpayments_configured_in_admin' => $settings->nowpaymentsConfiguredInAdmin(),
-            ],
-        ]);
+        ];
+    }
+
+    private function paymentSettingsViewData(): object
+    {
+        $settings = PaymentSettings::current();
+        $yookassaCredentials = $settings->yookassaCredentials();
+
+        return (object) [
+            'yookassa_enabled' => $settings->yookassa_enabled,
+            'telegram_stars_enabled' => $settings->telegram_stars_enabled,
+            'internal_test_payments_enabled' => $settings->internal_test_payments_enabled,
+            'nowpayments_enabled' => $settings->nowpayments_enabled,
+            'nowpayments_rub_verified' => $settings->nowpayments_rub_verified,
+            'yookassa_configured' => filled($yookassaCredentials['shop_id']) && filled($yookassaCredentials['secret_key']),
+            'yookassa_configured_in_admin' => $settings->yookassaConfiguredInAdmin(),
+            'telegram_configured' => filled($settings->telegramBotToken()),
+            'telegram_configured_in_admin' => $settings->telegramConfiguredInAdmin(),
+            'smtp_enabled' => $settings->smtp_enabled,
+            'smtp_host' => $settings->smtp_host,
+            'smtp_port' => $settings->smtp_port,
+            'smtp_encryption' => $settings->smtp_encryption,
+            'smtp_from_address' => $settings->smtp_from_address,
+            'smtp_from_name' => $settings->smtp_from_name,
+            'smtp_configured_in_admin' => $settings->smtpConfiguredInAdmin(),
+            'smtp_username_configured_in_admin' => $settings->smtpUsernameConfiguredInAdmin(),
+            'smtp_password_configured_in_admin' => $settings->smtpPasswordConfiguredInAdmin(),
+            'nowpayments_configured_in_admin' => $settings->nowpaymentsConfiguredInAdmin(),
+        ];
     }
 
     public function editUser(User $user): View
@@ -240,18 +281,6 @@ class AdminController extends Controller
     public function updateHomeContent(Request $request): RedirectResponse
     {
         $validated = $request->validate([
-            'site_name' => ['required', 'string', 'max:80', 'not_regex:/[<>]/'],
-            'meta_title' => ['required', 'string', 'max:70', 'not_regex:/[<>]/'],
-            'meta_description' => ['required', 'string', 'max:180', 'not_regex:/[<>]/'],
-            'canonical_url' => [
-                'nullable', 'url:https', 'not_regex:/[@?#]/', 'max:255',
-                function (string $attribute, mixed $value, \Closure $fail): void {
-                    if (filled($value) && trim((string) parse_url($value, PHP_URL_PATH), '/') !== '') {
-                        $fail('Канонический URL должен указывать на корень сайта без пути.');
-                    }
-                },
-            ],
-            'og_image_url' => ['nullable', 'url:https', 'not_regex:/[@?#]/', 'max:500'],
             'hero_badge' => ['required', 'string', 'max:100', 'not_regex:/[<>]/'],
             'hero_title' => ['required', 'string', 'max:120', 'not_regex:/[<>]/'],
             'hero_body' => ['required', 'string', 'max:1000', 'not_regex:/[<>]/'],
@@ -273,10 +302,6 @@ class AdminController extends Controller
             'footer_text' => ['required', 'string', 'max:180', 'not_regex:/[<>]/'],
         ]);
 
-        if (filled($validated['canonical_url'] ?? null)) {
-            $validated['canonical_url'] = rtrim($validated['canonical_url'], '/');
-        }
-
         $content = SiteContent::query()->find(1);
         $content ??= new SiteContent(SiteContent::defaults());
         $content->id = 1;
@@ -292,7 +317,46 @@ class AdminController extends Controller
             ]);
         }
 
-        return back()->with('status', 'Тексты главной страницы и SEO-настройки сохранены.');
+        return back()->with('status', 'Содержимое главной страницы сохранено.');
+    }
+
+    public function updateSeoSettings(Request $request): RedirectResponse
+    {
+        $validated = $request->validate([
+            'site_name' => ['required', 'string', 'max:80', 'not_regex:/[<>]/'],
+            'meta_title' => ['required', 'string', 'max:70', 'not_regex:/[<>]/'],
+            'meta_description' => ['required', 'string', 'max:180', 'not_regex:/[<>]/'],
+            'canonical_url' => [
+                'nullable', 'url:https', 'not_regex:/[@?#]/', 'max:255',
+                function (string $attribute, mixed $value, \Closure $fail): void {
+                    if (filled($value) && trim((string) parse_url($value, PHP_URL_PATH), '/') !== '') {
+                        $fail('Канонический URL должен указывать на корень сайта без пути.');
+                    }
+                },
+            ],
+            'og_image_url' => ['nullable', 'url:https', 'not_regex:/[@?#]/', 'max:500'],
+        ]);
+
+        if (filled($validated['canonical_url'] ?? null)) {
+            $validated['canonical_url'] = rtrim($validated['canonical_url'], '/');
+        }
+
+        $content = SiteContent::query()->find(1);
+        $content ??= new SiteContent(SiteContent::defaults());
+        $content->id = 1;
+        $content->fill($validated);
+        $changed = array_keys($content->getDirty());
+        $content->save();
+
+        if ($changed !== []) {
+            AdminAuditLog::query()->create([
+                'actor_id' => $request->user()->id,
+                'action' => 'seo_settings_updated',
+                'summary' => 'Изменены SEO-настройки: '.implode(', ', $changed).'.',
+            ]);
+        }
+
+        return back()->with('status', 'SEO-настройки сохранены.');
     }
 
     public function storeTariff(Request $request): RedirectResponse

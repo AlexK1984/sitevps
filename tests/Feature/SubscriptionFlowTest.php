@@ -129,7 +129,7 @@ class SubscriptionFlowTest extends TestCase
         $admin = User::factory()->create(['is_admin' => true]);
         config(['services.telegram.bot_token' => 'browser-must-not-see-this']);
 
-        $this->actingAs($admin)->get('/admin')
+        $this->actingAs($admin)->get('/admin/payment-settings')
             ->assertOk()
             ->assertSee('Настройки оплат')
             ->assertSee('hosted invoice в RUB')
@@ -369,7 +369,7 @@ class SubscriptionFlowTest extends TestCase
         $admin = User::factory()->create(['is_admin' => true]);
         $customer = User::factory()->create();
 
-        $this->actingAs($admin)->get('/admin')
+        $this->actingAs($admin)->get('/admin/payment-settings')
             ->assertOk()
             ->assertSee('внутреннюю тестовую оплату')
             ->assertDontSee('Создать заказ TEST и выдать реальный доступ');
@@ -402,9 +402,9 @@ class SubscriptionFlowTest extends TestCase
             'internal_test_payments_enabled' => '1',
         ])->assertRedirect();
 
-        $this->actingAs($admin)->get('/admin')
+        $this->actingAs($admin)->get('/admin/orders')
             ->assertOk()
-            ->assertSee('тестовая симуляция не обращается к ЮKassa или Telegram', false)
+            ->assertSee('Платёжный провайдер не вызывается, списания нет.')
             ->assertSee('Создать заказ TEST и выдать реальный доступ');
 
         $payload = [
@@ -445,7 +445,7 @@ class SubscriptionFlowTest extends TestCase
         Queue::assertPushed(ProvisionSubscription::class, 1);
         Http::assertNothingSent();
 
-        $this->get('/admin')
+        $this->get('/admin/payment-events')
             ->assertOk()
             ->assertSee('TEST')
             ->assertSee('Тестовая оплата смоделирована')
@@ -514,7 +514,7 @@ class SubscriptionFlowTest extends TestCase
         $this->assertArrayNotHasKey('nowpayments_api_key', $settings->toArray());
         $this->assertArrayNotHasKey('nowpayments_ipn_secret', $settings->toArray());
 
-        $this->get('/admin')
+        $this->get('/admin/payment-settings')
             ->assertOk()
             ->assertDontSee('private-shop-id')
             ->assertDontSee('private-yookassa-key')
@@ -559,7 +559,7 @@ class SubscriptionFlowTest extends TestCase
             'action' => 'smtp_settings_updated',
         ]);
 
-        $this->actingAs($admin)->get('/admin')->assertOk()
+        $this->actingAs($admin)->get('/admin/mail-settings')->assertOk()
             ->assertDontSee('private-smtp-user')
             ->assertDontSee('private-smtp-password')
             ->assertSee('Активно подключение из админ-панели.');
@@ -739,7 +739,7 @@ class SubscriptionFlowTest extends TestCase
             'password' => 'panel-secret',
         ]);
 
-        $this->actingAs($admin)->get('/admin')
+        $this->actingAs($admin)->get('/admin/panels')
             ->assertOk()
             ->assertSee('автоматически найдёт все активные inbound')
             ->assertDontSee('Основной ID inbound')
@@ -772,7 +772,7 @@ class SubscriptionFlowTest extends TestCase
         $this->assertSame(200, $panel->connection_http_status);
         $this->assertNotNull($panel->connection_checked_at);
 
-        $this->get('/admin')
+        $this->get('/admin/panels')
             ->assertOk()
             ->assertSee('Проверить подключение')
             ->assertSee('Онлайн')
@@ -837,8 +837,11 @@ class SubscriptionFlowTest extends TestCase
         $this->assertSame('server_error', $panel->connection_diagnostic);
         $this->assertNotNull($panel->connection_checked_at);
 
-        $this->get('/admin')->assertSee('Офлайн')->assertSee('Панель вернула внутреннюю HTTP-ошибку')
-            ->assertDontSee('private API details')->assertDontSee('panel-secret');
+        $this->get('/admin/panels')
+            ->assertSee('Офлайн')
+            ->assertSee('Панель вернула внутреннюю HTTP-ошибку')
+            ->assertDontSee('private API details')
+            ->assertDontSee('panel-secret');
     }
 
     public function test_panel_authentication_failure_is_recorded_as_offline_without_exposing_details(): void
@@ -862,8 +865,11 @@ class SubscriptionFlowTest extends TestCase
         $this->assertSame(200, $panel->connection_http_status);
         $this->assertNotNull($panel->connection_checked_at);
 
-        $this->get('/admin')->assertSee('Офлайн')->assertSee('HTTP 200: 3x-ui вернула success=false')
-            ->assertDontSee('invalid password')->assertDontSee('panel-secret');
+        $this->get('/admin/panels')
+            ->assertSee('Офлайн')
+            ->assertSee('HTTP 200: 3x-ui вернула success=false')
+            ->assertDontSee('invalid password')
+            ->assertDontSee('panel-secret');
         Http::assertSentCount(2);
     }
 
@@ -1095,8 +1101,11 @@ class SubscriptionFlowTest extends TestCase
         $this->assertSame('connect_timeout', $panel->connection_diagnostic);
         $this->assertNotNull($panel->connection_checked_at);
 
-        $this->get('/admin')->assertSee('Офлайн')->assertSee('Истекло время ожидания ответа панели')
-            ->assertDontSee('private timeout details')->assertDontSee('panel-secret');
+        $this->get('/admin/panels')
+            ->assertSee('Офлайн')
+            ->assertSee('Истекло время ожидания ответа панели')
+            ->assertDontSee('private timeout details')
+            ->assertDontSee('panel-secret');
     }
 
     public function test_panel_connection_check_classifies_tls_failure_without_leaking_details(): void

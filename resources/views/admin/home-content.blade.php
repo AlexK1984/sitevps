@@ -1,18 +1,8 @@
 <section class="admin-section" id="home-content">
-    <div class="section-heading"><div><span class="eyebrow">СОДЕРЖИМОЕ И SEO</span><h2>Главная страница</h2></div></div>
-    <p class="muted">Только обычный текст: HTML и JavaScript запрещены. SEO-настройки помогают поисковым системам понять страницу, но не гарантируют конкретную позицию в выдаче.</p>
+    <div class="section-heading"><div><span class="eyebrow">СОДЕРЖИМОЕ</span><h2>Главная страница</h2></div></div>
+    <p class="muted">Только обычный текст: HTML и JavaScript запрещены. Поисковая и социальная информация настраивается отдельно в разделе SEO.</p>
     <form class="panel-card admin-form content-editor" method="post" action="{{ route('admin.home-content.update') }}">
         @csrf @method('PUT')
-        <h3>Поисковая и социальная информация</h3>
-        <div class="form-grid">
-            <label>Название сайта<input name="site_name" value="{{ $siteContent->site_name }}" required maxlength="80"></label>
-            <label>SEO title (до 70 символов)<input name="meta_title" value="{{ $siteContent->meta_title }}" required maxlength="70"></label>
-        </div>
-        <label>Meta description (до 180 символов)<textarea name="meta_description" rows="2" required maxlength="180">{{ $siteContent->meta_description }}</textarea></label>
-        <div class="form-grid">
-            <label>Canonical URL корня сайта<input type="url" name="canonical_url" value="{{ $siteContent->canonical_url }}" placeholder="{{ config('app.url') }}" maxlength="255"></label>
-            <label>Изображение Open Graph (HTTPS URL, необязательно)<input type="url" name="og_image_url" value="{{ $siteContent->og_image_url }}" maxlength="500"></label>
-        </div>
         <h3>Первый экран</h3>
         <div class="form-grid">
             <label>Небольшой заголовок<input name="hero_badge" value="{{ $siteContent->hero_badge }}" required maxlength="100"></label>
@@ -52,6 +42,6 @@
             <label>Шаг 3 — текст<textarea name="step_three_body" rows="2" required maxlength="500">{{ $siteContent->step_three_body }}</textarea></label>
         </div>
         <label>Текст внизу сайта<input name="footer_text" value="{{ $siteContent->footer_text }}" required maxlength="180"></label>
-        <button class="button button-full" type="submit">Сохранить главную и SEO</button>
+        <button class="button button-full" type="submit">Сохранить главную страницу</button>
     </form>
 </section>

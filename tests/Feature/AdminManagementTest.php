@@ -27,18 +27,83 @@ class AdminManagementTest extends TestCase
 
         $this->actingAs($admin)->get('/admin')
             ->assertOk()
-            ->assertSee('Меню администрирования')
-            ->assertSee('Главная и SEO')
-            ->assertSee(route('admin.users.edit', $user))
+            ->assertSee('Разделы администрирования')
+            ->assertSee(route('admin.users'), false)
+            ->assertSee('Панель управления')
             ->assertDontSee('panel-secret');
+
+        $this->get(route('admin.users'))
+            ->assertOk()
+            ->assertSee(route('admin.users.edit', $user), false)
+            ->assertSee('aria-current="page"', false)
+            ->assertSee('Главная страница')
+            ->assertSee('SEO');
 
         $this->get(route('admin.users.edit', $user))
             ->assertOk()
+            ->assertSee('aria-current="page"', false)
             ->assertSee('name="is_active"', false)
             ->assertSee('name="is_admin"', false)
             ->assertSee('Назначенная панель')
             ->assertDontSee('name="password"', false)
             ->assertDontSee('name="telegram_user_id"', false);
+    }
+
+    public function test_admin_sections_have_distinct_routes_and_a_shared_active_sidebar(): void
+    {
+        $admin = User::factory()->create(['is_admin' => true]);
+        $routes = [
+            'admin.tariffs' => 'Тарифы',
+            'admin.panels' => 'Панели 3x-ui',
+            'admin.orders' => 'Заказы и платежи',
+            'admin.payment-events' => 'Журнал платёжных событий',
+            'admin.payment-settings' => 'Настройки оплат',
+            'admin.mail-settings' => 'Настройки SMTP',
+            'admin.site' => 'Главная страница',
+            'admin.seo' => 'SEO и социальная информация',
+            'admin.system' => 'Аудит изменений',
+        ];
+
+        $this->actingAs($admin);
+        foreach ($routes as $route => $heading) {
+            $this->get(route($route))
+                ->assertOk()
+                ->assertSee($heading)
+                ->assertSee('aria-current="page"', false)
+                ->assertSee('aria-label="Разделы администрирования"', false);
+        }
+    }
+
+    public function test_admin_can_update_seo_from_its_dedicated_page(): void
+    {
+        $admin = User::factory()->create(['is_admin' => true]);
+        $content = SiteContent::defaults();
+        $content['site_name'] = 'Новое название';
+        $content['meta_title'] = 'Обновлённый title';
+        $content['meta_description'] = 'Обновлённое описание страницы.';
+        $content['canonical_url'] = 'https://vpn.example.test/';
+        $content['og_image_url'] = 'https://vpn.example.test/social.png';
+
+        $this->actingAs($admin)->get(route('admin.seo'))
+            ->assertOk()
+            ->assertSee('action="'.route('admin.seo.update').'"', false)
+            ->assertSee('name="meta_title"', false);
+
+        $this->put(route('admin.seo.update'), $content)
+            ->assertRedirect()
+            ->assertSessionHasNoErrors();
+
+        $this->assertDatabaseHas('site_contents', [
+            'id' => 1,
+            'site_name' => 'Новое название',
+            'meta_title' => 'Обновлённый title',
+            'canonical_url' => 'https://vpn.example.test',
+            'og_image_url' => 'https://vpn.example.test/social.png',
+        ]);
+        $this->assertDatabaseHas('admin_audit_logs', [
+            'actor_id' => $admin->id,
+            'action' => 'seo_settings_updated',
+        ]);
     }
 
     public function test_admin_can_update_user_profile_panel_and_subscription_with_audit_and_panel_sync(): void
@@ -169,15 +234,21 @@ class AdminManagementTest extends TestCase
             && str_contains(data_get($request->data(), 'text', ''), 'Учётная запись отключена'));
     }
 
-    public function test_admin_can_update_homepage_text_and_seo_and_text_is_rendered_escaped(): void
+    public function test_admin_can_update_homepage_text_without_changing_seo_and_text_is_rendered_escaped(): void
     {
         $admin = User::factory()->create(['is_admin' => true]);
-        $content = SiteContent::defaults();
+        $seoDefaults = SiteContent::defaults();
+        $content = $seoDefaults;
         $content['site_name'] = 'VPN пример';
         $content['meta_title'] = 'VPN-доступ и тарифы | VPN пример';
         $content['meta_description'] = 'Описание тарифа и порядка оформления VPN-подписки.';
         $content['canonical_url'] = 'https://vpn.example.test/';
         $content['hero_title'] = 'Новые условия подписки';
+
+        $this->actingAs($admin)->get(route('admin.site'))
+            ->assertOk()
+            ->assertDontSee('name="meta_title"', false)
+            ->assertDontSee('name="canonical_url"', false);
 
         $this->actingAs($admin)->put(route('admin.home-content.update'), $content)
             ->assertRedirect()
@@ -185,17 +256,18 @@ class AdminManagementTest extends TestCase
 
         $this->assertDatabaseHas('site_contents', [
             'id' => 1,
-            'site_name' => 'VPN пример',
-            'meta_title' => 'VPN-доступ и тарифы | VPN пример',
-            'canonical_url' => 'https://vpn.example.test',
             'hero_title' => 'Новые условия подписки',
+        ]);
+        $this->assertDatabaseHas('site_contents', [
+            'id' => 1,
+            'site_name' => $seoDefaults['site_name'],
+            'meta_title' => $seoDefaults['meta_title'],
+            'meta_description' => $seoDefaults['meta_description'],
+            'canonical_url' => $seoDefaults['canonical_url'],
         ]);
 
         $this->get('/')
             ->assertOk()
-            ->assertSee('<title>VPN-доступ и тарифы | VPN пример</title>', false)
-            ->assertSee('name="description" content="Описание тарифа и порядка оформления VPN-подписки."', false)
-            ->assertSee('rel="canonical" href="https://vpn.example.test/"', false)
             ->assertSee('property="og:type" content="website"', false)
             ->assertSee('Новые условия подписки')
             ->assertSee('https://schema.org');

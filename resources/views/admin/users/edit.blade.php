@@ -1,11 +1,11 @@
-@extends('layouts.app')
+@extends('layouts.admin')
 
 @section('title', 'Редактирование пользователя')
 
-@section('content')
-<section class="dashboard-head">
+@section('admin-content')
+<section class="dashboard-head admin-page-heading">
     <div><span class="eyebrow">ПОЛЬЗОВАТЕЛИ</span><h1>Редактирование учётной записи</h1><p>{{ $user->email }}</p></div>
-    <a class="button button-outline" href="{{ route('admin.index') }}#users">Назад к админ-панели</a>
+    <a class="button button-outline" href="{{ route('admin.users') }}">К списку пользователей</a>
 </section>
 
 <form class="panel-card admin-form user-editor" method="post" action="{{ route('admin.users.update', $user) }}">

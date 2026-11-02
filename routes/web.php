@@ -47,9 +47,20 @@ Route::prefix('admin')
     ->middleware(['auth', 'active', 'admin'])
     ->group(function (): void {
         Route::get('/', [AdminController::class, 'index'])->name('index');
+        Route::get('/users', [AdminController::class, 'page'])->defaults('section', 'users')->name('users');
+        Route::get('/tariffs', [AdminController::class, 'page'])->defaults('section', 'tariffs')->name('tariffs');
+        Route::get('/panels', [AdminController::class, 'page'])->defaults('section', 'panels')->name('panels');
+        Route::get('/orders', [AdminController::class, 'page'])->defaults('section', 'orders')->name('orders');
+        Route::get('/payment-events', [AdminController::class, 'page'])->defaults('section', 'payment-events')->name('payment-events');
+        Route::get('/payment-settings', [AdminController::class, 'page'])->defaults('section', 'payment-settings')->name('payment-settings');
+        Route::get('/mail-settings', [AdminController::class, 'page'])->defaults('section', 'mail-settings')->name('mail-settings');
+        Route::get('/site', [AdminController::class, 'page'])->defaults('section', 'site')->name('site');
+        Route::get('/seo', [AdminController::class, 'page'])->defaults('section', 'seo')->name('seo');
+        Route::get('/system', [AdminController::class, 'page'])->defaults('section', 'system')->name('system');
         Route::get('/users/{user}/edit', [AdminController::class, 'editUser'])->name('users.edit');
         Route::put('/users/{user}', [AdminController::class, 'updateUser'])->name('users.update');
         Route::put('/home-content', [AdminController::class, 'updateHomeContent'])->name('home-content.update');
+        Route::put('/seo', [AdminController::class, 'updateSeoSettings'])->name('seo.update');
         Route::put('/payment-settings', [AdminController::class, 'updatePaymentSettings'])->name('payment-settings.update');
         Route::post('/payment-settings/nowpayments-rub-check', [AdminController::class, 'verifyNowPaymentsRuble'])
             ->middleware('throttle:3,1')

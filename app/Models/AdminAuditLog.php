@@ -26,6 +26,7 @@ class AdminAuditLog extends Model
             'user_panel_assigned' => 'Назначена панель',
             'subscription_sync_failed' => 'Ошибка синхронизации подписки',
             'homepage_content_updated' => 'Обновлена главная страница',
+            'seo_settings_updated' => 'Обновлены SEO-настройки',
             'smtp_settings_updated' => 'Обновлены настройки SMTP',
             'payment_credentials_updated' => 'Обновлены реквизиты платежей',
             'nowpayments_checkout_toggled' => 'Изменён статус криптооплаты',
