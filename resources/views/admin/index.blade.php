@@ -8,7 +8,20 @@
     <a class="button button-outline" href="{{ route('home') }}">На сайт →</a>
 </section>
 
-<section class="admin-section">
+<nav class="admin-menu" aria-label="Меню администрирования">
+    <a href="#home-content">Главная и SEO</a>
+    <a href="#users">Пользователи</a>
+    <a href="#tariffs">Тарифы</a>
+    <a href="#panels">Панели 3x-ui</a>
+    <a href="#orders">Заказы</a>
+    <a href="#payment-settings">Оплаты</a>
+    <a href="#payment-events">Платёжные события</a>
+    <a href="#admin-audit">Аудит изменений</a>
+</nav>
+
+@include('admin.home-content')
+
+<section class="admin-section" id="payment-settings">
     <div class="section-heading"><div><span class="eyebrow">ПЛАТЁЖНЫЕ МЕТОДЫ</span><h2>Настройки оплат</h2></div></div>
     <div class="admin-grid">
         <form class="panel-card admin-form" method="post" action="{{ route('admin.payment-settings.update') }}">
@@ -77,7 +90,7 @@
 </section>
 
 @if($paymentSettings->internal_test_payments_enabled)
-<section class="admin-section">
+<section class="admin-section" id="tariffs">
     <div class="section-heading"><div><span class="eyebrow">ВНУТРЕННЯЯ СИМУЛЯЦИЯ</span><h2>Тестовая оплата</h2></div></div>
     <p class="notice">Только для администраторов. Доступ будет реально выдан или продлён через обычную очередь на назначенной панели. Платёжный провайдер не вызывается, списания нет. Заказ будет помечен «TEST». Проверьте, что выбраны правильные пользователь и тариф.</p>
     <form class="panel-card admin-form" method="post" action="{{ route('admin.payments.test') }}">
@@ -107,7 +120,7 @@
 </section>
 @endif
 
-<section class="admin-section">
+<section class="admin-section" id="panels">
     <div class="section-heading"><div><span class="eyebrow">КАТАЛОГ</span><h2>Тарифы</h2></div></div>
     <div class="admin-grid">
         <form class="panel-card admin-form" method="post" action="{{ route('admin.tariffs.store') }}">
@@ -187,20 +200,27 @@
     </div>
 </section>
 
-<section class="admin-section">
+<section class="admin-section" id="users">
     <div class="section-heading"><div><span class="eyebrow">НАЗНАЧЕНИЯ</span><h2>Пользователи</h2></div></div>
-    <div class="table-wrap"><table><thead><tr><th>Пользователь</th><th>Email</th><th>Панель</th><th>Действие</th></tr></thead><tbody>
+    <form class="admin-user-search" method="get" action="{{ route('admin.index') }}">
+        <label>Поиск по имени или email<input name="user_search" value="{{ request('user_search') }}" maxlength="255"></label>
+        <button class="button button-small button-outline" type="submit">Найти</button>
+    </form>
+    <div class="table-wrap"><table><thead><tr><th>Пользователь</th><th>Email</th><th>Статус сайта</th><th>Назначенная панель</th><th>Управление</th></tr></thead><tbody>
         @foreach($users as $user)
-            <tr><td>{{ $user->name }} @if($user->is_admin)<span class="status-pill">Администратор</span>@endif</td><td>{{ $user->email }}</td><td>
-                <form id="assign-{{ $user->id }}" method="post" action="{{ route('admin.users.panel', $user) }}">@csrf @method('PUT')
-                    <select name="assigned_panel_id"><option value="">Не назначена</option>@foreach($panels as $panel)<option value="{{ $panel->id }}" @selected($user->assigned_panel_id === $panel->id)>{{ $panel->name }}</option>@endforeach</select>
-                </form></td><td><button class="button button-small button-outline" type="submit" form="assign-{{ $user->id }}">Сохранить</button></td></tr>
+            <tr>
+                <td>{{ $user->name }} @if($user->is_admin)<span class="status-pill">Администратор</span>@endif</td>
+                <td>{{ $user->email }}</td>
+                <td><span class="status-pill {{ $user->is_active ? 'status-active' : 'status-offline' }}">{{ $user->is_active ? 'Активна' : 'Отключена' }}</span></td>
+                <td>{{ $user->assignedPanel?->name ?? 'Не назначена' }}</td>
+                <td><a class="button button-small button-outline" href="{{ route('admin.users.edit', $user) }}">Редактировать</a></td>
+            </tr>
         @endforeach
     </tbody></table></div>
     <div class="pagination">{{ $users->links() }}</div>
 </section>
 
-<section class="admin-section">
+<section class="admin-section" id="orders">
     <div class="section-heading"><div><span class="eyebrow">ПЛАТЕЖИ И ЗАКАЗЫ</span><h2>Последние 100 заказов</h2></div></div>
     <div class="table-wrap"><table><thead><tr><th>Дата</th><th>Пользователь</th><th>Тариф</th><th>Сумма</th><th>Панель</th><th>Статус</th><th></th></tr></thead><tbody>
         @forelse($orders as $order)
@@ -213,7 +233,7 @@
     </tbody></table></div>
 </section>
 
-<section class="admin-section">
+<section class="admin-section" id="payment-events">
     <div class="section-heading">
         <div><span class="eyebrow">АУДИТ</span><h2>Журнал платёжных событий</h2></div>
         <form method="get" action="{{ route('admin.index') }}">
@@ -242,5 +262,20 @@
         @empty<tr><td colspan="8" class="empty-cell">Событий пока нет.</td>@endforelse
     </tbody></table></div>
     <div class="pagination">{{ $paymentEvents->links() }}</div>
+</section>
+
+<section class="admin-section" id="admin-audit">
+    <div class="section-heading"><div><span class="eyebrow">АДМИНИСТРАТИВНЫЙ АУДИТ</span><h2>Изменения пользователей и сайта</h2></div></div>
+    <div class="table-wrap"><table><thead><tr><th>Время</th><th>Администратор</th><th>Пользователь</th><th>Действие</th><th>Изменения</th></tr></thead><tbody>
+        @forelse($adminAuditLogs as $audit)
+            <tr>
+                <td>{{ $audit->created_at->format('d.m.Y H:i:s') }}</td>
+                <td>{{ $audit->actor?->email ?? '—' }}</td>
+                <td>{{ $audit->subjectUser?->email ?? '—' }}</td>
+                <td>{{ $audit->actionLabel() }}</td>
+                <td>{{ $audit->summary }}</td>
+            </tr>
+        @empty<tr><td colspan="5" class="empty-cell">Записей пока нет.</td>@endforelse
+    </tbody></table></div>
 </section>
 @endsection

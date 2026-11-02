@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\PaymentSettings;
+use App\Models\SiteContent;
 use App\Models\Tariff;
 use App\Models\TelegramLinkToken;
 use App\Services\YooKassaClient;
@@ -19,6 +20,7 @@ class DashboardController extends Controller
 
         return view('dashboard', [
             'user' => $user,
+            'siteContent' => SiteContent::current(),
             'tariffs' => Tariff::query()->where('is_active', true)->orderBy('price_kopecks')->get(),
             'subscription' => $user->subscription()->with(['panel', 'tariff'])->first(),
             'orders' => $user->orders()->with('tariff')->latest()->limit(10)->get(),

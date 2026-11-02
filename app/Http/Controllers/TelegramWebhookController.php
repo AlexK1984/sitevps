@@ -97,6 +97,12 @@ class TelegramWebhookController extends Controller
             return response()->json(['ok' => true]);
         }
 
+        if (! $user->is_active) {
+            $bot->sendMessage($chatId, 'Учётная запись отключена. Обратитесь к администратору сайта.');
+
+            return response()->json(['ok' => true]);
+        }
+
         if (in_array($text, ['/start', '/plans', '/renew'], true)) {
             $tariffs = Tariff::query()->where('is_active', true)->orderBy('price_kopecks')->get();
             $settings = PaymentSettings::current();
@@ -242,6 +248,7 @@ class TelegramWebhookController extends Controller
             if ($order->payment_method !== 'telegram_stars'
                 || $order->payment_currency !== 'XTR'
                 || $order->payment_amount_units !== $amount
+                || ! $order->user->is_active
                 || (string) $order->user->telegram_user_id !== (string) $telegramUserId
                 || $order->status !== 'pending'
                 || $order->paid_at) {
@@ -398,7 +405,7 @@ class TelegramWebhookController extends Controller
 
             $user = User::query()->whereKey($link->user_id)->lockForUpdate()->first();
 
-            if (! $user || $user->telegram_user_id || User::query()->where('telegram_user_id', $telegramUserId)->exists()) {
+            if (! $user || ! $user->is_active || $user->telegram_user_id || User::query()->where('telegram_user_id', $telegramUserId)->exists()) {
                 return false;
             }
 

@@ -3,11 +3,15 @@
 namespace App\Http\Controllers;
 
 use App\Exceptions\InternalTestPaymentException;
+use App\Exceptions\PanelApiException;
 use App\Jobs\ProvisionSubscription;
+use App\Models\AdminAuditLog;
 use App\Models\Order;
 use App\Models\Panel;
 use App\Models\PaymentEvent;
 use App\Models\PaymentSettings;
+use App\Models\SiteContent;
+use App\Models\Subscription;
 use App\Models\Tariff;
 use App\Models\User;
 use App\Services\InternalTestPaymentService;
@@ -15,8 +19,10 @@ use App\Services\PaymentEventLogger;
 use App\Services\ThreeXUiClient;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
 use Illuminate\View\View;
 
 class AdminController extends Controller
@@ -38,10 +44,23 @@ class AdminController extends Controller
             ->withQueryString();
 
         return view('admin.index', [
-            'users' => User::query()->with('assignedPanel')->orderBy('id')->paginate(30, ['*'], 'users'),
+            'users' => User::query()
+                ->with('assignedPanel')
+                ->when($request->filled('user_search'), function ($query) use ($request): void {
+                    $search = trim((string) $request->query('user_search'));
+                    $query->where(function ($query) use ($search): void {
+                        $query->where('name', 'like', '%'.$search.'%')
+                            ->orWhere('email', 'like', '%'.$search.'%');
+                    });
+                })
+                ->orderBy('id')
+                ->paginate(30, ['*'], 'users')
+                ->withQueryString(),
+            'siteContent' => SiteContent::current(),
             'tariffs' => Tariff::query()->orderBy('id')->get(),
             'panels' => Panel::query()->orderBy('name')->get(),
             'orders' => Order::query()->with(['user', 'tariff', 'panel'])->latest()->limit(100)->get(),
+            'adminAuditLogs' => AdminAuditLog::query()->with(['actor', 'subjectUser'])->latest()->limit(50)->get(),
             'paymentEvents' => $paymentEvents,
             'eventProvider' => $eventProvider,
             'testPaymentUsers' => User::query()->whereNotNull('assigned_panel_id')->orderBy('email')->get(['id', 'email']),
@@ -62,6 +81,204 @@ class AdminController extends Controller
                 'telegram_configured_in_admin' => $settings->telegramConfiguredInAdmin(),
             ],
         ]);
+    }
+
+    public function editUser(User $user): View
+    {
+        return view('admin.users.edit', [
+            'user' => $user->load(['assignedPanel', 'subscription.tariff', 'subscription.panel']),
+            'siteContent' => SiteContent::current(),
+            'userOrders' => $user->orders()->with('tariff')->latest()->limit(20)->get(),
+            'panels' => Panel::query()->orderBy('name')->get(),
+            'tariffs' => Tariff::query()->orderBy('name')->get(),
+        ]);
+    }
+
+    public function updateUser(Request $request, User $user, ThreeXUiClient $client): RedirectResponse
+    {
+        $request->merge(['email' => is_string($request->input('email')) ? Str::lower(trim($request->input('email'))) : $request->input('email')]);
+
+        $validated = $request->validate([
+            'name' => ['required', 'string', 'max:120'],
+            'email' => ['required', 'email', 'max:255', 'unique:users,email,'.$user->id],
+            'is_admin' => ['required', 'boolean'],
+            'is_active' => ['required', 'boolean'],
+            'assigned_panel_id' => ['nullable', 'integer', 'exists:panels,id'],
+            'subscription' => ['sometimes', 'array'],
+            'subscription.tariff_id' => ['nullable', 'integer', 'exists:tariffs,id'],
+            'subscription.expires_at' => ['required_with:subscription', 'date'],
+            'subscription.traffic_limit_gb' => ['required_with:subscription', 'integer', 'min:1', 'max:100000'],
+            'subscription.connection_limit' => ['required_with:subscription', 'integer', 'min:1', 'max:100'],
+        ]);
+
+        $syncSubscriptionId = null;
+        $syncPanelId = null;
+        $auditChanges = [];
+
+        DB::transaction(function () use ($request, $user, $validated, &$syncSubscriptionId, &$syncPanelId, &$auditChanges): void {
+            $admins = User::query()->where('is_admin', true)->orderBy('id')->lockForUpdate()->get(['id', 'is_active']);
+            $lockedUser = User::query()->whereKey($user->id)->lockForUpdate()->firstOrFail();
+            $oldPanelId = $lockedUser->assigned_panel_id;
+            $newPanelId = isset($validated['assigned_panel_id']) ? (int) $validated['assigned_panel_id'] : null;
+
+            if ($oldPanelId !== $newPanelId
+                && $lockedUser->subscription()
+                    ->where('status', 'active')
+                    ->where('expires_at', '>', now())
+                    ->exists()) {
+                throw ValidationException::withMessages([
+                    'assigned_panel_id' => 'Нельзя менять панель у активной подписки: конфигурация уже выдана на старом сервере.',
+                ]);
+            }
+
+            if ($lockedUser->subscription()->where('status', 'provisioning')->exists()
+                && ($oldPanelId !== $newPanelId || array_key_exists('subscription', $validated))) {
+                throw ValidationException::withMessages([
+                    'subscription' => 'Дождитесь завершения текущей выдачи, затем редактируйте подписку.',
+                ]);
+            }
+
+            $newAdmin = (bool) $validated['is_admin'];
+            $newActive = (bool) $validated['is_active'];
+            if ($newAdmin && ! $newActive) {
+                throw ValidationException::withMessages([
+                    'is_active' => 'Отключённая учётная запись не может быть администратором.',
+                ]);
+            }
+
+            if ($lockedUser->is_admin && $lockedUser->is_active && (! $newAdmin || ! $newActive)) {
+                $otherActiveAdmins = $admins->where('id', '!=', $lockedUser->id)
+                    ->where('is_active', true)
+                    ->count();
+
+                if ($otherActiveAdmins === 0) {
+                    throw ValidationException::withMessages([
+                        'is_admin' => 'Нельзя снять права или отключить последнего активного администратора.',
+                    ]);
+                }
+            }
+
+            $lockedUser->fill([
+                'name' => $validated['name'],
+                'email' => $validated['email'],
+                'is_admin' => $newAdmin,
+                'is_active' => $newActive,
+                'assigned_panel_id' => $newPanelId,
+            ]);
+            $userChanges = array_keys($lockedUser->getDirty());
+            if ($userChanges !== []) {
+                $lockedUser->save();
+                $auditChanges[] = 'Профиль: '.implode(', ', $userChanges).'.';
+            }
+
+            $subscription = $lockedUser->subscription()->lockForUpdate()->first();
+            if (isset($validated['subscription']) && $subscription) {
+                $values = $validated['subscription'];
+                $subscription->fill([
+                    'tariff_id' => $values['tariff_id'] ?? null,
+                    'expires_at' => filled($values['expires_at'] ?? null) ? $values['expires_at'] : null,
+                    'traffic_limit_bytes' => (int) $values['traffic_limit_gb'] * 1_000_000_000,
+                    'connection_limit' => (int) $values['connection_limit'],
+                    'panel_id' => $newPanelId,
+                ]);
+                $subscriptionChanges = array_keys($subscription->getDirty());
+                if ($subscriptionChanges !== []) {
+                    $subscription->save();
+                    $auditChanges[] = 'Подписка: '.implode(', ', $subscriptionChanges).'.';
+                    $syncSubscriptionId = $subscription->id;
+                    $syncPanelId = $newPanelId;
+                }
+            }
+
+            if ($auditChanges !== []) {
+                AdminAuditLog::query()->create([
+                    'actor_id' => $request->user()->id,
+                    'subject_user_id' => $lockedUser->id,
+                    'action' => 'user_updated',
+                    'summary' => implode(' ', $auditChanges),
+                ]);
+            }
+        });
+
+        if ($syncSubscriptionId && $syncPanelId) {
+            $subscription = Subscription::query()->findOrFail($syncSubscriptionId);
+            if (in_array($subscription->status, ['active', 'provisioning_failed'], true)) {
+                try {
+                    $client->provision(Panel::query()->findOrFail($syncPanelId), $subscription);
+                    $subscription->forceFill(['last_error' => null])->save();
+                } catch (PanelApiException $exception) {
+                    $subscription->forceFill(['last_error' => $exception->getMessage()])->save();
+                    AdminAuditLog::query()->create([
+                        'actor_id' => $request->user()->id,
+                        'subject_user_id' => $user->id,
+                        'action' => 'subscription_sync_failed',
+                        'summary' => 'Изменения сохранены в сайте, но панель 3x-ui не подтвердила синхронизацию: '.$exception->getMessage(),
+                    ]);
+
+                    return back()->with('status', 'Изменения сохранены, но синхронизация с панелью не удалась. Проверьте ошибку в карточке подписки.');
+                }
+            }
+        }
+
+        return redirect()->route('admin.users.edit', $user)->with('status', 'Данные пользователя обновлены.');
+    }
+
+    public function updateHomeContent(Request $request): RedirectResponse
+    {
+        $validated = $request->validate([
+            'site_name' => ['required', 'string', 'max:80', 'not_regex:/[<>]/'],
+            'meta_title' => ['required', 'string', 'max:70', 'not_regex:/[<>]/'],
+            'meta_description' => ['required', 'string', 'max:180', 'not_regex:/[<>]/'],
+            'canonical_url' => [
+                'nullable', 'url:https', 'not_regex:/[@?#]/', 'max:255',
+                function (string $attribute, mixed $value, \Closure $fail): void {
+                    if (filled($value) && trim((string) parse_url($value, PHP_URL_PATH), '/') !== '') {
+                        $fail('Канонический URL должен указывать на корень сайта без пути.');
+                    }
+                },
+            ],
+            'og_image_url' => ['nullable', 'url:https', 'not_regex:/[@?#]/', 'max:500'],
+            'hero_badge' => ['required', 'string', 'max:100', 'not_regex:/[<>]/'],
+            'hero_title' => ['required', 'string', 'max:120', 'not_regex:/[<>]/'],
+            'hero_body' => ['required', 'string', 'max:1000', 'not_regex:/[<>]/'],
+            'hero_cta_label' => ['required', 'string', 'max:60', 'not_regex:/[<>]/'],
+            'hero_cta_target' => ['required', 'in:#plans,account'],
+            'hero_fact_one' => ['required', 'string', 'max:80', 'not_regex:/[<>]/'],
+            'hero_fact_two' => ['required', 'string', 'max:80', 'not_regex:/[<>]/'],
+            'plans_eyebrow' => ['required', 'string', 'max:80', 'not_regex:/[<>]/'],
+            'plans_title' => ['required', 'string', 'max:120', 'not_regex:/[<>]/'],
+            'plans_description' => ['required', 'string', 'max:500', 'not_regex:/[<>]/'],
+            'steps_eyebrow' => ['required', 'string', 'max:80', 'not_regex:/[<>]/'],
+            'steps_title' => ['required', 'string', 'max:120', 'not_regex:/[<>]/'],
+            'step_one_title' => ['required', 'string', 'max:80', 'not_regex:/[<>]/'],
+            'step_one_body' => ['required', 'string', 'max:500', 'not_regex:/[<>]/'],
+            'step_two_title' => ['required', 'string', 'max:80', 'not_regex:/[<>]/'],
+            'step_two_body' => ['required', 'string', 'max:500', 'not_regex:/[<>]/'],
+            'step_three_title' => ['required', 'string', 'max:80', 'not_regex:/[<>]/'],
+            'step_three_body' => ['required', 'string', 'max:500', 'not_regex:/[<>]/'],
+            'footer_text' => ['required', 'string', 'max:180', 'not_regex:/[<>]/'],
+        ]);
+
+        if (filled($validated['canonical_url'] ?? null)) {
+            $validated['canonical_url'] = rtrim($validated['canonical_url'], '/');
+        }
+
+        $content = SiteContent::query()->find(1);
+        $content ??= new SiteContent(SiteContent::defaults());
+        $content->id = 1;
+        $content->fill($validated);
+        $changed = array_keys($content->getDirty());
+        $content->save();
+
+        if ($changed !== []) {
+            AdminAuditLog::query()->create([
+                'actor_id' => $request->user()->id,
+                'action' => 'homepage_content_updated',
+                'summary' => 'Изменены поля главной страницы: '.implode(', ', $changed).'.',
+            ]);
+        }
+
+        return back()->with('status', 'Тексты главной страницы и SEO-настройки сохранены.');
     }
 
     public function storeTariff(Request $request): RedirectResponse
@@ -319,7 +536,17 @@ class AdminController extends Controller
             ]);
         }
 
+        $previousPanelId = $user->assigned_panel_id;
         $user->update($validated);
+
+        if ((int) ($previousPanelId ?? 0) !== (int) ($user->assigned_panel_id ?? 0)) {
+            AdminAuditLog::query()->create([
+                'actor_id' => $request->user()->id,
+                'subject_user_id' => $user->id,
+                'action' => 'user_panel_assigned',
+                'summary' => 'Изменена назначенная панель пользователя.',
+            ]);
+        }
 
         if ($user->assigned_panel_id) {
             $user->orders()

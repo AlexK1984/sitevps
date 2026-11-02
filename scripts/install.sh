@@ -384,6 +384,23 @@ read -r -u 3 -p "Administrator email: " ADMIN_EMAIL || fail "An administrator em
 ADMIN_EMAIL="$(normalize_email "$ADMIN_EMAIL")" ||
     fail "The administrator email could not be validated. Type it manually without spaces and try again."
 
+read -r -u 3 -p "Google reCAPTCHA v2 site key (leave empty to configure later): " RECAPTCHA_SITE_KEY ||
+    fail "Could not read the reCAPTCHA site key."
+RECAPTCHA_SECRET_KEY=""
+if [[ -n "$RECAPTCHA_SITE_KEY" ]]; then
+    if [[ ! "$RECAPTCHA_SITE_KEY" =~ ^[A-Za-z0-9_-]+$ ]]; then
+        fail "The reCAPTCHA site key contains unsupported characters."
+    fi
+    read -r -s -u 3 -p "Google reCAPTCHA v2 secret key (input hidden): " RECAPTCHA_SECRET_KEY ||
+        fail "Could not read the reCAPTCHA secret key."
+    printf '\n' >&3
+    if [[ ! "$RECAPTCHA_SECRET_KEY" =~ ^[A-Za-z0-9_-]+$ ]]; then
+        fail "The reCAPTCHA secret key is empty or contains unsupported characters."
+    fi
+else
+    printf 'CAPTCHA keys were not provided. Login and registration will remain unavailable until they are added to %s/.env.\n' "$APP_DIR"
+fi
+
 if path_exists "$APP_DIR/.env" && { [[ ! -f "$APP_DIR/.env" ]] || [[ -L "$APP_DIR/.env" ]]; }; then
     fail "$APP_DIR/.env is not a regular file; refusing to modify it."
 fi
@@ -498,6 +515,12 @@ set_env CACHE_STORE database
 set_env QUEUE_CONNECTION database
 set_env LOG_LEVEL warning
 set_env MAIL_FROM_ADDRESS "$CERT_EMAIL"
+if [[ -n "$RECAPTCHA_SITE_KEY" ]]; then
+    set_env RECAPTCHA_SITE_KEY "$RECAPTCHA_SITE_KEY"
+    set_env RECAPTCHA_SECRET_KEY "$RECAPTCHA_SECRET_KEY"
+    set_env RECAPTCHA_HOSTNAME "$DOMAIN"
+fi
+unset RECAPTCHA_SECRET_KEY
 chown "$APP_USER":www-data "$APP_DIR/.env"
 chmod 640 "$APP_DIR/.env"
 
@@ -623,3 +646,4 @@ rm -f -- "$DATA_DIR/.installing"
 printf '\nInstallation complete: https://%s\n' "$DOMAIN"
 printf 'Configure YooKassa and Telegram in %s/.env, then run:\n' "$APP_DIR"
 printf '  sudo -u %s php %s/artisan config:clear\n' "$APP_USER" "$APP_DIR"
+printf 'Configure SMTP in %s/.env to enable password reset email; the installer does not store SMTP credentials.\n' "$APP_DIR"

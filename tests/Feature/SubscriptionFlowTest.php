@@ -35,11 +35,23 @@ class SubscriptionFlowTest extends TestCase
     {
         $this->get('/')->assertOk();
 
+        config([
+            'services.recaptcha.secret_key' => 'test-secret',
+            'services.recaptcha.site_key' => 'test-site-key',
+        ]);
+        Http::fake([
+            'https://www.google.com/recaptcha/api/siteverify' => Http::response([
+                'success' => true,
+                'hostname' => 'localhost',
+            ]),
+        ]);
+
         $response = $this->post('/register', [
             'name' => 'VPN customer',
             'email' => 'Customer@Example.com',
             'password' => 'correct-horse-battery',
             'password_confirmation' => 'correct-horse-battery',
+            'g-recaptcha-response' => 'valid-test-token',
         ]);
 
         $response->assertRedirect(route('dashboard'));
